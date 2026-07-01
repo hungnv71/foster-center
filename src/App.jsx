@@ -1,8 +1,10 @@
 import { useState, useEffect, useCallback } from "react";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from "recharts";
-import { Home, BookOpen, Users, User, DollarSign, BarChart2, Plus, Edit2, Trash2, Search, X, CheckCircle, GraduationCap, AlertCircle, RefreshCw, Download, Upload, FileSpreadsheet, Wifi, WifiOff } from "lucide-react";
+import { Home, BookOpen, Users, User, DollarSign, BarChart2, Plus, Edit2, Trash2, Search, X, CheckCircle, GraduationCap, AlertCircle, RefreshCw, Download, Upload, FileSpreadsheet, Wifi, WifiOff, FileUp } from "lucide-react";
 import { supabase, fetchAll, insertRow, insertRows, updateRow, deleteRow, deleteAll, MAPPERS } from "./lib/supabase.js";
 import { exportFullWorkbook, exportMonthlyPaymentReport, exportSummaryReport } from "./lib/excelExport.js";
+import { parseStudentsExcel, parseTeachersExcel, downloadStudentTemplate, downloadTeacherTemplate } from "./lib/excelImport.js";
+import leafIcon from "./assets/leaf-icon.png";
 
 // ═══════════════════════════════ CONSTANTS & HELPERS ═══════════════════════════════
 const genId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
@@ -355,16 +357,90 @@ function StudentsInClass({ cls, data, api }) {
 }
 
 // ═══════════════════════════════ STUDENTS VIEW ═══════════════════════════════
+// ═══════════════════════════════ SHARED: EXCEL IMPORT PREVIEW ═══════════════════════════════
+function pickExcelFile(onFile) {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = ".xlsx,.xls";
+  input.onchange = (e) => { const f = e.target.files[0]; if (f) onFile(f); };
+  input.click();
+}
+function ImportPreview({ items, errors, warnings, itemNoun, color, onCancel, onConfirm, busy, showClasses }) {
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16, padding: 12, background: color + "12", borderRadius: 10 }}>
+        <CheckCircle size={20} color={color} />
+        <div style={{ fontSize: 14, color: C.text }}>Tìm thấy <b>{items.length}</b> {itemNoun} hợp lệ, sẵn sàng nhập.</div>
+      </div>
+      {errors.length > 0 && (
+        <div style={{ marginBottom: 16, padding: 12, background: C.red + "12", borderRadius: 10, maxHeight: 120, overflowY: "auto" }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: C.red, marginBottom: 6 }}>⚠ {errors.length} dòng bị bỏ qua:</div>
+          {errors.map((e, i) => <div key={i} style={{ fontSize: 12, color: C.red }}>{e}</div>)}
+        </div>
+      )}
+      {warnings && warnings.length > 0 && (
+        <div style={{ marginBottom: 16, padding: 12, background: C.amber + "15", borderRadius: 10, maxHeight: 120, overflowY: "auto" }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: C.amber, marginBottom: 6 }}>⚠ {warnings.length} tên lớp không khớp (học sinh vẫn được nhập, chỉ không tự xếp lớp):</div>
+          {warnings.map((w, i) => <div key={i} style={{ fontSize: 12, color: "#92650b" }}>{w}</div>)}
+        </div>
+      )}
+      {items.length > 0 && (
+        <div style={{ marginBottom: 16, maxHeight: 220, overflowY: "auto", border: `1px solid ${C.border}`, borderRadius: 10 }}>
+          {items.map((it, i) => (
+            <div key={i} style={{ padding: "8px 12px", borderBottom: i < items.length - 1 ? `1px solid ${C.border}` : "none", fontSize: 13, color: C.text }}>
+              {it.name}
+              {showClasses && it.classNames?.length > 0 && <span style={{ color: C.blue, fontSize: 12, marginLeft: 8 }}>→ {it.classNames.join(", ")}</span>}
+            </div>
+          ))}
+        </div>
+      )}
+      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+        <Btn color={C.muted} outlined onClick={onCancel}>Hủy</Btn>
+        <Btn color={color} onClick={onConfirm} style={{ opacity: busy ? 0.6 : 1, pointerEvents: busy ? "none" : "auto" }}>{busy ? "Đang nhập..." : `Nhập ${items.length} ${itemNoun}`}</Btn>
+      </div>
+    </div>
+  );
+}
+
 function StudentsView({ data, api }) {
   const [search, setSearch] = useState("");
   const [modal, setModal] = useState(null);
   const [confirmDel, setConfirmDel] = useState(null);
   const [viewCls, setViewCls] = useState(null);
+  const [importPreview, setImportPreview] = useState(null);
+  const [importing, setImporting] = useState(false);
   const blank = { name: "", phone: "", parentName: "", parentPhone: "", grade: "10", address: "", joinDate: todayStr() };
   const filtered = data.students.filter((s) => s.name.toLowerCase().includes(search.toLowerCase()) || s.phone.includes(search) || s.grade.includes(search));
   const countCls = (id) => data.registrations.filter((r) => r.studentId === id && r.status === "active").length;
   const handleSave = async (s) => { setModal(null); if (s.id) await api.updateStudent(s); else await api.addStudent(s); };
   const handleDel = async (id) => { setConfirmDel(null); await api.deleteStudent(id); };
+  const startImport = () => pickExcelFile(async (file) => {
+    try {
+      const parsed = await parseStudentsExcel(file);
+      const warnings = [];
+      parsed.students.forEach((s) => {
+        s.classNames.forEach((cn) => {
+          const found = data.classes.some((c) => c.name.trim().toLowerCase() === cn.trim().toLowerCase());
+          if (!found) warnings.push(`${s.name}: không tìm thấy lớp "${cn}"`);
+        });
+      });
+      setImportPreview({ ...parsed, warnings });
+    } catch { alert("❌ Không đọc được file. Hãy chắc chắn đây là file .xlsx đúng định dạng."); }
+  });
+  const confirmImport = async () => {
+    setImporting(true);
+    const studentsWithIds = importPreview.students.map((s) => ({ ...s, id: genId() }));
+    const regs = [];
+    studentsWithIds.forEach((s) => {
+      (s.classNames || []).forEach((cn) => {
+        const cls = data.classes.find((c) => c.name.trim().toLowerCase() === cn.trim().toLowerCase());
+        if (cls) regs.push({ id: genId(), studentId: s.id, classId: cls.id, startDate: todayStr(), status: "active" });
+      });
+    });
+    await api.addStudents(studentsWithIds);
+    if (regs.length) await api.addRegistrations(regs);
+    setImporting(false); setImportPreview(null);
+  };
   return (
     <div>
       <Card title={`Danh sách học sinh (${filtered.length})`} action={
@@ -372,6 +448,7 @@ function StudentsView({ data, api }) {
           <div style={{ position: "relative" }}><Search size={15} style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: C.muted }} />
             <input placeholder="Tìm học sinh..." value={search} onChange={(e) => setSearch(e.target.value)} style={{ padding: "8px 12px 8px 32px", borderRadius: 8, border: `1.5px solid ${C.border}`, fontSize: 14, width: 220, outline: "none" }} /></div>
           <Btn color={C.green} onClick={() => setModal({ student: { ...blank } })}><Plus size={15} />Thêm học sinh</Btn>
+          <Btn color={C.blue} outlined onClick={startImport}><FileUp size={15} />Nhập Excel</Btn>
         </div>
       }>
         <div style={{ overflowX: "auto" }}>
@@ -411,6 +488,12 @@ function StudentsView({ data, api }) {
       <Modal open={!!viewCls} onClose={() => setViewCls(null)} title={`Lớp của: ${data.students.find((s) => s.id === viewCls)?.name || ""}`}>
         {viewCls && <ClassesOfStudent studentId={viewCls} data={data} api={api} />}
       </Modal>
+      <Modal open={!!importPreview} onClose={() => setImportPreview(null)} title="Nhập danh sách học sinh từ Excel">
+        {importPreview && <ImportPreview items={importPreview.students} errors={importPreview.errors} warnings={importPreview.warnings} showClasses itemNoun="học sinh" color={C.green} busy={importing} onCancel={() => setImportPreview(null)} onConfirm={confirmImport} />}
+      </Modal>
+      <div style={{ textAlign: "right", marginTop: -12, marginBottom: 8 }}>
+        <button onClick={downloadStudentTemplate} style={{ background: "none", border: "none", color: C.muted, fontSize: 12, cursor: "pointer", textDecoration: "underline" }}>Tải file mẫu Excel học sinh</button>
+      </div>
     </div>
   );
 }
@@ -479,6 +562,8 @@ function TeachersView({ data, api }) {
   const [search, setSearch] = useState("");
   const [modal, setModal] = useState(null);
   const [confirmDel, setConfirmDel] = useState(null);
+  const [importPreview, setImportPreview] = useState(null);
+  const [importing, setImporting] = useState(false);
   const blank = { name: "", phone: "", subject: "Toán", email: "", joinDate: todayStr() };
   const filtered = data.teachers.filter((t) => t.name.toLowerCase().includes(search.toLowerCase()) || t.subject.toLowerCase().includes(search.toLowerCase()));
   const getClasses = (id) => data.classes.filter((c) => c.teacherId === id && c.status === "active");
@@ -487,6 +572,15 @@ function TeachersView({ data, api }) {
     if (data.classes.some((c) => c.teacherId === id)) return alert("Giáo viên đang phụ trách lớp học.\nVui lòng chuyển lớp trước khi xóa.");
     setConfirmDel(null); await api.deleteTeacher(id);
   };
+  const startImport = () => pickExcelFile(async (file) => {
+    try { setImportPreview(await parseTeachersExcel(file)); }
+    catch { alert("❌ Không đọc được file. Hãy chắc chắn đây là file .xlsx đúng định dạng."); }
+  });
+  const confirmImport = async () => {
+    setImporting(true);
+    await api.addTeachers(importPreview.teachers);
+    setImporting(false); setImportPreview(null);
+  };
   return (
     <div>
       <Card title={`Đội ngũ giáo viên (${filtered.length})`} action={
@@ -494,6 +588,7 @@ function TeachersView({ data, api }) {
           <div style={{ position: "relative" }}><Search size={15} style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: C.muted }} />
             <input placeholder="Tìm giáo viên..." value={search} onChange={(e) => setSearch(e.target.value)} style={{ padding: "8px 12px 8px 32px", borderRadius: 8, border: `1.5px solid ${C.border}`, fontSize: 14, width: 200, outline: "none" }} /></div>
           <Btn color={C.purple} onClick={() => setModal({ teacher: { ...blank } })}><Plus size={15} />Thêm GV</Btn>
+          <Btn color={C.blue} outlined onClick={startImport}><FileUp size={15} />Nhập Excel</Btn>
         </div>
       }>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(260px,1fr))", gap: 14 }}>
@@ -532,6 +627,12 @@ function TeachersView({ data, api }) {
         <p style={{ color: C.text, marginBottom: 20 }}>Bạn có chắc muốn xóa giáo viên này không?</p>
         <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}><Btn color={C.muted} outlined onClick={() => setConfirmDel(null)}>Hủy</Btn><Btn color={C.red} onClick={() => handleDel(confirmDel)}>Xóa</Btn></div>
       </Modal>
+      <Modal open={!!importPreview} onClose={() => setImportPreview(null)} title="Nhập danh sách giáo viên từ Excel">
+        {importPreview && <ImportPreview items={importPreview.teachers} errors={importPreview.errors} itemNoun="giáo viên" color={C.purple} busy={importing} onCancel={() => setImportPreview(null)} onConfirm={confirmImport} />}
+      </Modal>
+      <div style={{ textAlign: "right", marginTop: -12, marginBottom: 8 }}>
+        <button onClick={downloadTeacherTemplate} style={{ background: "none", border: "none", color: C.muted, fontSize: 12, cursor: "pointer", textDecoration: "underline" }}>Tải file mẫu Excel giáo viên</button>
+      </div>
     </div>
   );
 }
@@ -762,6 +863,7 @@ export default function FosterApp() {
   // ── Mutation API passed down to views. State updates arrive via realtime. ──
   const api = {
     addTeacher: async (t) => { try { await insertRow("teachers", { ...t, id: genId() }); } catch { showToast("⚠ Lỗi khi thêm giáo viên", C.red); } },
+    addTeachers: async (ts) => { try { await insertRows("teachers", ts.map((t) => ({ ...t, id: genId() }))); showToast(`✓ Đã nhập ${ts.length} giáo viên`); } catch { showToast("⚠ Lỗi khi nhập danh sách giáo viên", C.red); } },
     updateTeacher: async (t) => { try { await updateRow("teachers", t.id, MAPPERS.teachers.toRow(t)); } catch { showToast("⚠ Lỗi khi cập nhật giáo viên", C.red); } },
     deleteTeacher: async (id) => { try { await deleteRow("teachers", id); } catch { showToast("⚠ Lỗi khi xóa giáo viên", C.red); } },
 
@@ -770,10 +872,12 @@ export default function FosterApp() {
     deleteClass: async (id) => { try { await deleteRow("classes", id); } catch { showToast("⚠ Lỗi khi xóa lớp", C.red); } },
 
     addStudent: async (s) => { try { await insertRow("students", { ...s, id: genId() }); } catch { showToast("⚠ Lỗi khi thêm học sinh", C.red); } },
+    addStudents: async (ss) => { try { await insertRows("students", ss); showToast(`✓ Đã nhập ${ss.length} học sinh`); } catch { showToast("⚠ Lỗi khi nhập danh sách học sinh", C.red); } },
     updateStudent: async (s) => { try { await updateRow("students", s.id, MAPPERS.students.toRow(s)); } catch { showToast("⚠ Lỗi khi cập nhật học sinh", C.red); } },
     deleteStudent: async (id) => { try { await deleteRow("students", id); } catch { showToast("⚠ Lỗi khi xóa học sinh", C.red); } },
 
     addRegistration: async (r) => { try { await insertRow("registrations", r); } catch { showToast("⚠ Lỗi khi đăng ký lớp", C.red); } },
+    addRegistrations: async (rs) => { try { await insertRows("registrations", rs); } catch { showToast("⚠ Lỗi khi đăng ký lớp hàng loạt", C.red); } },
     deleteRegistration: async (id) => { try { await deleteRow("registrations", id); } catch { showToast("⚠ Lỗi khi hủy đăng ký", C.red); } },
 
     addPayment: async (p) => { try { await insertRow("payments", p); } catch { showToast("⚠ Lỗi khi ghi nhận học phí", C.red); } },
@@ -835,7 +939,7 @@ export default function FosterApp() {
   if (loading) return (
     <div style={{ height: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: C.bg }}>
       <div style={{ textAlign: "center", color: C.navy }}>
-        <GraduationCap size={52} color={C.amber} style={{ margin: "0 auto 12px", display: "block" }} />
+        <img src={leafIcon} alt="Foster" style={{ width: 56, height: 56, objectFit: "contain", margin: "0 auto 12px", display: "block" }} />
         <div style={{ fontSize: 20, fontWeight: 800 }}>Đang tải Foster...</div>
       </div>
     </div>
@@ -848,9 +952,11 @@ export default function FosterApp() {
       <div style={{ width: 215, background: C.navy, display: "flex", flexDirection: "column", flexShrink: 0 }}>
         <div style={{ padding: "22px 18px 16px", borderBottom: "1px solid rgba(255,255,255,.1)" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <div style={{ background: C.amber, borderRadius: 10, padding: 8, display: "flex" }}><GraduationCap size={20} color="#fff" /></div>
+            <div style={{ background: "#fff", borderRadius: 10, padding: 6, display: "flex", boxShadow: "0 1px 4px rgba(0,0,0,.15)" }}>
+              <img src={leafIcon} alt="Foster" style={{ width: 24, height: 24, objectFit: "contain", borderRadius: 4 }} />
+            </div>
             <div><div style={{ color: "#fff", fontWeight: 800, fontSize: 19, letterSpacing: -0.5 }}>FOSTER</div>
-            <div style={{ color: "rgba(255,255,255,.4)", fontSize: 11 }}>Trung tâm dạy thêm</div></div>
+            <div style={{ color: "rgba(255,255,255,.45)", fontSize: 10.5, lineHeight: 1.3 }}>Nuôi dưỡng ước mơ, kiến tạo tương lai</div></div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 5, marginTop: 10, fontSize: 11, color: online ? "#6EE7B7" : "rgba(255,255,255,.4)" }}>
             {online ? <Wifi size={12} /> : <WifiOff size={12} />}{online ? "Đồng bộ trực tuyến" : "Đang kết nối..."}
