@@ -69,6 +69,16 @@ export function exportFullWorkbook(data) {
     });
   XLSX.utils.book_append_sheet(wb, sheetFrom(payRows), "Học phí");
 
+  const ATT_LABEL = { present: "Có mặt", absent: "Vắng", late: "Muộn", excused: "Có phép" };
+  const attRows = (data.attendance || [])
+    .sort((a, b) => (a.date < b.date ? 1 : -1))
+    .map((a) => {
+      const s = data.students.find((x) => x.id === a.studentId);
+      const c = data.classes.find((x) => x.id === a.classId);
+      return { "Ngày": fmtDateVN(a.date), "Lớp": c?.name || "", "Học sinh": s?.name || "", "Trạng thái": ATT_LABEL[a.status] || a.status, "Ghi chú": a.note || "" };
+    });
+  XLSX.utils.book_append_sheet(wb, sheetFrom(attRows), "Điểm danh");
+
   XLSX.writeFile(wb, `Foster-du-lieu-${todayTag()}.xlsx`);
 }
 

@@ -54,12 +54,20 @@ export const paymentToRow = (p) => ({
   amount: p.amount, paid_date: p.paidDate || null, status: p.status,
 });
 
+export const rowToAttendance = (r) => ({
+  id: r.id, classId: r.class_id, studentId: r.student_id, date: r.date, status: r.status, note: r.note || "",
+});
+export const attendanceToRow = (a) => ({
+  id: a.id, class_id: a.classId, student_id: a.studentId, date: a.date, status: a.status, note: a.note || null,
+});
+
 export const MAPPERS = {
   teachers: { toApp: rowToTeacher, toRow: teacherToRow },
   classes: { toApp: rowToClass, toRow: classToRow },
   students: { toApp: rowToStudent, toRow: studentToRow },
   registrations: { toApp: rowToReg, toRow: regToRow },
   payments: { toApp: rowToPayment, toRow: paymentToRow },
+  attendance: { toApp: rowToAttendance, toRow: attendanceToRow },
 };
 
 // ═══════════════════ generic CRUD ═══════════════════
@@ -76,6 +84,12 @@ export async function insertRows(table, appObjs) {
 }
 export async function updateRow(table, id, patch) {
   const { error } = await supabase.from(table).update(patch).eq("id", id);
+  if (error) throw error;
+}
+export async function upsertRows(table, appObjs, conflictCols) {
+  if (!appObjs.length) return;
+  const rows = appObjs.map(MAPPERS[table].toRow);
+  const { error } = await supabase.from(table).upsert(rows, { onConflict: conflictCols });
   if (error) throw error;
 }
 export async function deleteRow(table, id) {

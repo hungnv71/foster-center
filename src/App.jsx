@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from "recharts";
-import { Home, BookOpen, Users, User, DollarSign, BarChart2, Plus, Edit2, Trash2, Search, X, CheckCircle, GraduationCap, AlertCircle, RefreshCw, Download, Upload, FileSpreadsheet, Wifi, WifiOff, FileUp } from "lucide-react";
-import { supabase, fetchAll, insertRow, insertRows, updateRow, deleteRow, deleteAll, MAPPERS } from "./lib/supabase.js";
+import { Home, BookOpen, Users, User, DollarSign, BarChart2, Plus, Edit2, Trash2, Search, X, CheckCircle, GraduationCap, AlertCircle, RefreshCw, Download, Upload, FileSpreadsheet, Wifi, WifiOff, FileUp, ClipboardCheck } from "lucide-react";
+import { supabase, fetchAll, insertRow, insertRows, updateRow, deleteRow, deleteAll, upsertRows, MAPPERS } from "./lib/supabase.js";
 import { exportFullWorkbook, exportMonthlyPaymentReport, exportSummaryReport } from "./lib/excelExport.js";
 import { parseStudentsExcel, parseTeachersExcel, downloadStudentTemplate, downloadTeacherTemplate } from "./lib/excelImport.js";
 import leafIcon from "./assets/leaf-icon.png";
@@ -16,7 +16,10 @@ const GRADES = ["6", "7", "8", "9", "10", "11", "12"];
 const DAYS = ["T2", "T3", "T4", "T5", "T6", "T7", "CN"];
 const C = { navy: "#1B3A6B", amber: "#F5A623", blue: "#3B82F6", green: "#10B981", red: "#EF4444", purple: "#8B5CF6", bg: "#EFF3F8", border: "#E2E8F0", text: "#1E293B", muted: "#64748B" };
 const PIE_COLORS = [C.blue, C.green, C.purple, C.amber, C.red, "#06B6D4", "#EC4899", "#84CC16"];
-const TABLE_ORDER = ["teachers", "classes", "students", "registrations", "payments"];
+const TABLE_ORDER = ["teachers", "classes", "students", "registrations", "payments", "attendance"];
+const DAY_CODE_BY_JSDAY = ["CN", "T2", "T3", "T4", "T5", "T6", "T7"];
+const dayCodeOf = (dateStr) => { const [y, m, d] = dateStr.split("-").map(Number); return DAY_CODE_BY_JSDAY[new Date(y, m - 1, d).getDay()]; };
+const ATT_STATUS = { present: { label: "Có mặt", color: "#10B981" }, absent: { label: "Vắng", color: "#EF4444" }, late: { label: "Muộn", color: "#F5A623" }, excused: { label: "Có phép", color: "#8B5CF6" } };
 
 // ═══════════════════════════════ SAMPLE DATA (used only for "reset") ═══════════════════════════════
 const SAMPLE_DATA = {
@@ -68,6 +71,7 @@ const SAMPLE_DATA = {
     { id: "py15", studentId: "s4", classId: "c5", month: 6, year: 2026, amount: 500000, paidDate: null, status: "unpaid" },
     { id: "py16", studentId: "s5", classId: "c1", month: 6, year: 2026, amount: 500000, paidDate: null, status: "unpaid" },
   ],
+  attendance: [],
 };
 
 // ═══════════════════════════════ SHARED UI ═══════════════════════════════
@@ -657,6 +661,128 @@ function TeacherForm({ teacher, onSave, onCancel }) {
 }
 
 // ═══════════════════════════════ PAYMENTS VIEW ═══════════════════════════════
+// ═══════════════════════════════ ATTENDANCE VIEW ═══════════════════════════════
+function AttendanceView({ data, api }) {
+  const [date, setDate] = useState(todayStr());
+  const [classId, setClassId] = useState("");
+  const [showAllClasses, setShowAllClasses] = useState(false);
+  const [statusMap, setStatusMap] = useState({});
+  const [saving, setSaving] = useState(false);
+
+  const dayCode = dayCodeOf(date);
+  const activeClasses = data.classes.filter((c) => c.status === "active");
+  const relevantClasses = showAllClasses ? activeClasses : activeClasses.filter((c) => c.days.includes(dayCode));
+  const classList = relevantClasses.length ? relevantClasses : activeClasses; // fallback if nothing scheduled that day
+
+  useEffect(() => {
+    if (!classList.some((c) => c.id === classId)) setClassId(classList[0]?.id || "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [date, showAllClasses, data.classes.length]);
+
+  const cls = data.classes.find((c) => c.id === classId);
+  const roster = cls
+    ? data.registrations.filter((r) => r.classId === cls.id && r.status === "active")
+        .map((r) => data.students.find((s) => s.id === r.studentId)).filter(Boolean)
+        .sort((a, b) => a.name.localeCompare(b.name, "vi"))
+    : [];
+
+  const existing = {};
+  data.attendance.filter((a) => a.classId === classId && a.date === date).forEach((a) => { existing[a.studentId] = a; });
+
+  useEffect(() => {
+    const m = {};
+    roster.forEach((s) => { const ex = existing[s.id]; m[s.id] = { status: ex?.status || "present", note: ex?.note || "" }; });
+    setStatusMap(m);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [classId, date, data.attendance.length]);
+
+  const setStatus = (sid, status) => setStatusMap((m) => ({ ...m, [sid]: { ...m[sid], status } }));
+  const setNote = (sid, note) => setStatusMap((m) => ({ ...m, [sid]: { ...m[sid], note } }));
+  const markAll = (status) => setStatusMap((m) => { const n = { ...m }; roster.forEach((s) => { n[s.id] = { ...n[s.id], status }; }); return n; });
+
+  const save = async () => {
+    if (!roster.length) return;
+    setSaving(true);
+    const rows = roster.map((s) => ({
+      id: existing[s.id]?.id || genId(), classId, studentId: s.id, date,
+      status: statusMap[s.id]?.status || "present", note: statusMap[s.id]?.note || "",
+    }));
+    await api.saveAttendance(rows);
+    setSaving(false);
+  };
+
+  const counts = { present: 0, absent: 0, late: 0, excused: 0 };
+  roster.forEach((s) => { const st = statusMap[s.id]?.status || "present"; counts[st] = (counts[st] || 0) + 1; });
+  const alreadySaved = roster.length > 0 && roster.every((s) => existing[s.id]);
+
+  return (
+    <div>
+      <Card title="📋 Điểm danh theo buổi học" action={
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={{ padding: "7px 12px", borderRadius: 8, border: `1.5px solid ${C.border}`, fontSize: 14, outline: "none" }} />
+          <select value={classId} onChange={(e) => setClassId(e.target.value)} style={{ padding: "7px 12px", borderRadius: 8, border: `1.5px solid ${C.border}`, fontSize: 14, outline: "none", minWidth: 200 }}>
+            {classList.length === 0 && <option value="">Chưa có lớp</option>}
+            {classList.map((c) => <option key={c.id} value={c.id}>{c.name} ({c.days.join(",")} {c.startTime})</option>)}
+          </select>
+          <label style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 13, color: C.muted, cursor: "pointer" }}>
+            <input type="checkbox" checked={showAllClasses} onChange={(e) => setShowAllClasses(e.target.checked)} />
+            Hiện tất cả lớp
+          </label>
+        </div>
+      }>
+        {!relevantClasses.length && !showAllClasses && (
+          <div style={{ marginBottom: 14, padding: 10, background: C.amber + "15", borderRadius: 8, fontSize: 13, color: "#92650b" }}>
+            Không có lớp nào lịch học rơi vào thứ này ({dayCode}). Đang hiện tất cả lớp — tick "Hiện tất cả lớp" nếu đây là buổi học bù.
+          </div>
+        )}
+        {cls && (
+          <>
+            <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
+              {Object.entries(ATT_STATUS).map(([key, v]) => (
+                <div key={key} style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 12px", borderRadius: 8, background: v.color + "15" }}>
+                  <span style={{ width: 8, height: 8, borderRadius: 99, background: v.color }} />
+                  <span style={{ fontSize: 13, color: C.text }}>{v.label}: <b>{counts[key] || 0}</b></span>
+                </div>
+              ))}
+              {alreadySaved && <Badge color={C.blue}>Đã lưu điểm danh buổi này</Badge>}
+            </div>
+            <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+              <Btn color={C.green} outlined style={{ padding: "6px 12px", fontSize: 13 }} onClick={() => markAll("present")}>Đánh dấu tất cả Có mặt</Btn>
+            </div>
+            <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, overflow: "hidden" }}>
+              {roster.map((s, i) => {
+                const st = statusMap[s.id]?.status || "present";
+                return (
+                  <div key={s.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", borderBottom: i < roster.length - 1 ? `1px solid ${C.border}` : "none", flexWrap: "wrap" }}>
+                    <div style={{ minWidth: 160, fontWeight: 700, color: C.text, fontSize: 14 }}>{s.name}</div>
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                      {Object.entries(ATT_STATUS).map(([key, v]) => (
+                        <button key={key} onClick={() => setStatus(s.id, key)}
+                          style={{ padding: "5px 12px", borderRadius: 7, fontSize: 12.5, fontWeight: 600, cursor: "pointer", border: `1.5px solid ${st === key ? v.color : C.border}`, background: st === key ? v.color + "18" : "#fff", color: st === key ? v.color : C.muted }}>
+                          {v.label}
+                        </button>
+                      ))}
+                    </div>
+                    <input placeholder="Ghi chú (tùy chọn)" value={statusMap[s.id]?.note || ""} onChange={(e) => setNote(s.id, e.target.value)}
+                      style={{ flex: 1, minWidth: 140, padding: "6px 10px", borderRadius: 7, border: `1px solid ${C.border}`, fontSize: 12.5, outline: "none" }} />
+                  </div>
+                );
+              })}
+              {!roster.length && <div style={{ padding: "32px", textAlign: "center", color: C.muted }}>Lớp này chưa có học sinh đăng ký</div>}
+            </div>
+            {roster.length > 0 && (
+              <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 16 }}>
+                <Btn color={C.blue} onClick={save} style={{ opacity: saving ? 0.6 : 1 }}>{saving ? "Đang lưu..." : "💾 Lưu điểm danh"}</Btn>
+              </div>
+            )}
+          </>
+        )}
+        {!cls && <div style={{ padding: "32px", textAlign: "center", color: C.muted }}>Chưa có lớp học nào — vào tab Lớp học để tạo trước</div>}
+      </Card>
+    </div>
+  );
+}
+
 function PaymentsView({ data, api }) {
   const now = new Date();
   const [month, setMonth] = useState(now.getMonth() + 1);
@@ -750,6 +876,9 @@ function ReportsView({ data }) {
   const mRev = data.payments.filter((p) => p.month === cm && p.year === cy && p.status === "paid").reduce((s, p) => s + p.amount, 0);
   const actStudents = [...new Set(data.registrations.filter((r) => r.status === "active").map((r) => r.studentId))].length;
 
+  const monthAtt = (data.attendance || []).filter((a) => { const [y, m] = a.date.split("-").map(Number); return y === cy && m === cm; });
+  const attRate = monthAtt.length ? Math.round((monthAtt.filter((a) => a.status === "present" || a.status === "late").length / monthAtt.length) * 100) : null;
+
   const revenueData = Array.from({ length: 6 }, (_, i) => { const d = new Date(cy, cm - 1 - i, 1); const [m, y] = [d.getMonth() + 1, d.getFullYear()]; return { month: `T${m}`, revenue: data.payments.filter((p) => p.month === m && p.year === y && p.status === "paid").reduce((s, p) => s + p.amount, 0) }; }).reverse();
   const gradeData = GRADES.map((g) => ({ grade: `Lớp ${g}`, count: data.students.filter((s) => s.grade === g).length })).filter((x) => x.count > 0);
   const subjectData = SUBJECTS.map((s) => ({ name: s, value: data.classes.filter((c) => c.subject === s && c.status === "active").length })).filter((x) => x.value > 0);
@@ -757,10 +886,11 @@ function ReportsView({ data }) {
 
   return (
     <div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 14, marginBottom: 20 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 14, marginBottom: 20 }}>
         <StatCard icon={DollarSign} label="Tổng doanh thu" value={fmtMoney(totalRev)} color={C.amber} />
         <StatCard icon={DollarSign} label={`Thu tháng ${cm}/${cy}`} value={fmtMoney(mRev)} color={C.green} />
         <StatCard icon={Users} label="Học sinh đang học" value={actStudents} color={C.blue} />
+        <StatCard icon={ClipboardCheck} label={`Chuyên cần T${cm}/${cy}`} value={attRate === null ? "—" : `${attRate}%`} color={C.purple} sub={monthAtt.length ? `${monthAtt.length} lượt điểm danh` : "Chưa điểm danh tháng này"} />
       </div>
       <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 14 }}>
         <Btn color={C.green} onClick={() => exportSummaryReport({ revenueData, gradeData, occData })}><FileSpreadsheet size={15} />Xuất báo cáo Excel</Btn>
@@ -803,6 +933,7 @@ const NAV = [
   { id: "classes", icon: BookOpen, label: "Lớp học" },
   { id: "students", icon: Users, label: "Học sinh" },
   { id: "teachers", icon: User, label: "Giáo viên" },
+  { id: "attendance", icon: ClipboardCheck, label: "Điểm danh" },
   { id: "payments", icon: DollarSign, label: "Học phí" },
   { id: "reports", icon: BarChart2, label: "Báo cáo" },
 ];
@@ -842,8 +973,8 @@ export default function FosterApp() {
     let cancelled = false;
     (async () => {
       try {
-        const [teachers, classes, students, registrations, payments] = await Promise.all(TABLE_ORDER.map(fetchAll));
-        if (!cancelled) setData({ teachers, classes, students, registrations, payments });
+        const [teachers, classes, students, registrations, payments, attendance] = await Promise.all(TABLE_ORDER.map(fetchAll));
+        if (!cancelled) setData({ teachers, classes, students, registrations, payments, attendance });
       } catch (e) {
         console.error(e);
         if (!cancelled) showToast("⚠ Không thể tải dữ liệu — kiểm tra kết nối mạng", C.red);
@@ -883,6 +1014,11 @@ export default function FosterApp() {
     addPayment: async (p) => { try { await insertRow("payments", p); } catch { showToast("⚠ Lỗi khi ghi nhận học phí", C.red); } },
     addPayments: async (ps) => { try { await insertRows("payments", ps); } catch { showToast("⚠ Lỗi khi tạo bản ghi học phí", C.red); } },
     updatePaymentStatus: async (id, status, paid_date) => { try { await updateRow("payments", id, { status, paid_date }); } catch { showToast("⚠ Lỗi khi cập nhật học phí", C.red); } },
+
+    saveAttendance: async (rows) => {
+      try { await upsertRows("attendance", rows, "class_id,student_id,date"); showToast("✓ Đã lưu điểm danh"); }
+      catch { showToast("⚠ Lỗi khi lưu điểm danh", C.red); }
+    },
   };
 
   const exportJSON = () => {
@@ -897,13 +1033,14 @@ export default function FosterApp() {
 
   const pushFullDataset = async (dataset) => {
     // delete children first to respect FK constraints, then re-insert in dependency order
-    await deleteAll("payments"); await deleteAll("registrations"); await deleteAll("classes");
+    await deleteAll("attendance"); await deleteAll("payments"); await deleteAll("registrations"); await deleteAll("classes");
     await deleteAll("students"); await deleteAll("teachers");
     await insertRows("teachers", dataset.teachers);
     await insertRows("classes", dataset.classes);
     await insertRows("students", dataset.students);
     await insertRows("registrations", dataset.registrations);
     await insertRows("payments", dataset.payments);
+    await insertRows("attendance", dataset.attendance || []);
   };
 
   const importJSON = () => {
@@ -917,7 +1054,8 @@ export default function FosterApp() {
           const parsed = JSON.parse(ev.target.result);
           const keys = ["teachers", "classes", "students", "registrations", "payments"];
           if (!keys.every((k) => Array.isArray(parsed[k]))) return alert("❌ File không đúng định dạng Foster!");
-          const info = `📂 ${file.name}\n\n• ${parsed.teachers.length} giáo viên\n• ${parsed.classes.length} lớp học\n• ${parsed.students.length} học sinh\n• ${parsed.registrations.length} đăng ký\n• ${parsed.payments.length} bản ghi học phí\n\n⚠ Dữ liệu hiện tại (trên mọi thiết bị) sẽ bị ghi đè. Tiếp tục?`;
+          if (!Array.isArray(parsed.attendance)) parsed.attendance = [];
+          const info = `📂 ${file.name}\n\n• ${parsed.teachers.length} giáo viên\n• ${parsed.classes.length} lớp học\n• ${parsed.students.length} học sinh\n• ${parsed.registrations.length} đăng ký\n• ${parsed.payments.length} bản ghi học phí\n• ${parsed.attendance.length} bản ghi điểm danh\n\n⚠ Dữ liệu hiện tại (trên mọi thiết bị) sẽ bị ghi đè. Tiếp tục?`;
           if (!confirm(info)) return;
           setData(parsed);
           await pushFullDataset(parsed);
@@ -1011,6 +1149,7 @@ export default function FosterApp() {
           {tab === "classes" && <ClassesView data={data} api={api} />}
           {tab === "students" && <StudentsView data={data} api={api} />}
           {tab === "teachers" && <TeachersView data={data} api={api} />}
+          {tab === "attendance" && <AttendanceView data={data} api={api} />}
           {tab === "payments" && <PaymentsView data={data} api={api} />}
           {tab === "reports" && <ReportsView data={data} />}
         </div>
