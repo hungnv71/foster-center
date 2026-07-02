@@ -343,7 +343,7 @@ const GRID_START_MIN = 7 * 60;   // 07:00
 const GRID_END_MIN = 21.5 * 60;  // 21:30
 const toMinutes = (t) => { const [h, m] = t.split(":").map(Number); return h * 60 + m; };
 
-function RoomScheduleGrid({ data }) {
+function RoomScheduleGrid({ data, onSelectClass }) {
   const [day, setDay] = useState(dayCodeOf(todayStr()));
   const totalMin = GRID_END_MIN - GRID_START_MIN;
   const hourMarks = Array.from({ length: 15 }, (_, i) => 7 + i); // 7..21
@@ -383,8 +383,11 @@ function RoomScheduleGrid({ data }) {
                     const width = Math.min(100 - left, ((toMinutes(s.endTime) - toMinutes(s.startTime)) / totalMin) * 100);
                     const t = data.teachers.find((x) => x.id === s.cls.teacherId);
                     return (
-                      <div key={i} title={`${s.cls.name} · ${s.startTime}–${s.endTime} · GV: ${t?.name || "chưa phân công"}`}
-                        style={{ position: "absolute", left: `${left}%`, width: `${width}%`, top: 4, bottom: 4, background: C.blue, borderRadius: 6, color: "#fff", fontSize: 11.5, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 6px", overflow: "hidden", whiteSpace: "nowrap", cursor: "default" }}>
+                      <div key={i} title={`${s.cls.name} · ${s.startTime}–${s.endTime} · GV: ${t?.name || "chưa phân công"} · Bấm để mở lớp`}
+                        onClick={() => onSelectClass?.(s.cls)}
+                        style={{ position: "absolute", left: `${left}%`, width: `${width}%`, top: 4, bottom: 4, background: C.blue, borderRadius: 6, color: "#fff", fontSize: 11.5, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 6px", overflow: "hidden", whiteSpace: "nowrap", cursor: "pointer" }}
+                        onMouseEnter={(e) => (e.currentTarget.style.background = C.navy)}
+                        onMouseLeave={(e) => (e.currentTarget.style.background = C.blue)}>
                         {s.cls.name}
                       </div>
                     );
@@ -395,7 +398,7 @@ function RoomScheduleGrid({ data }) {
           })}
         </div>
       </div>
-      <div style={{ marginTop: 14, fontSize: 12, color: C.muted }}>💡 Di chuột vào ô màu xanh để xem chi tiết giờ học và giáo viên. Khoảng trắng trên mỗi dòng là thời gian phòng còn trống.</div>
+      <div style={{ marginTop: 14, fontSize: 12, color: C.muted }}>💡 Bấm vào ô màu xanh để mở lớp đó. Khoảng trắng trên mỗi dòng là thời gian phòng còn trống.</div>
     </div>
   );
 }
@@ -469,7 +472,7 @@ function ClassesView({ data, api, isAdmin }) {
             </table>
           </div>
         ) : (
-          <RoomScheduleGrid data={data} />
+          <RoomScheduleGrid data={data} onSelectClass={(cls) => setModal({ cls: { ...cls } })} />
         )}
       </Card>
       <Modal open={!!modal} onClose={() => setModal(null)} title={modal?.cls.id ? "Chỉnh sửa lớp học" : "Thêm lớp học"}>
@@ -513,8 +516,8 @@ function ClassForm({ cls, teachers, allClasses, onSave, onCancel }) {
     if (!f.schedule.length) return alert("Chọn ít nhất 1 buổi học trong tuần!");
     const conflicts = findScheduleConflicts(f, allClasses);
     if (conflicts.length) {
-      const proceed = confirm(`⚠ Phát hiện xung đột lịch:\n\n${conflicts.join("\n")}\n\nLớp đã có lịch trước đó được giữ nguyên. Vẫn lưu lớp này?`);
-      if (!proceed) return;
+      alert(`❌ Không thể lưu — trùng lịch:\n\n${conflicts.join("\n")}\n\nMột phòng không thể có 2 lớp học cùng lúc, và 1 giáo viên không thể dạy 2 lớp cùng lúc. Hãy đổi giờ/phòng/giáo viên rồi thử lại.`);
+      return;
     }
     onSave(f);
   };
@@ -543,7 +546,7 @@ function ClassForm({ cls, teachers, allClasses, onSave, onCancel }) {
               <select value={slot.room} onChange={(e) => updateSlot(slot.day, "room", e.target.value)} style={{ padding: "6px 8px", borderRadius: 6, border: `1px solid ${conflict ? C.red : C.border}`, fontSize: 13, color: conflict ? C.red : C.text }}>
                 {ROOMS.map((r) => {
                   const busy = roomConflictFor(slot.day, slot.startTime, slot.endTime, r);
-                  return <option key={r} value={r}>{r}{busy ? " ⚠ trùng" : ""}</option>;
+                  return <option key={r} value={r} disabled={busy && r !== slot.room}>{r}{busy ? " ⚠ trùng — không chọn được" : ""}</option>;
                 })}
               </select>
             </div>
