@@ -30,9 +30,10 @@ export function exportFullWorkbook(data) {
     const t = data.teachers.find((x) => x.id === c.teacherId);
     const enrolled = data.registrations.filter((r) => r.classId === c.id && r.status === "active").length;
     return {
-      "Tên lớp": c.name, "Môn": c.subject, "Giáo viên": t?.name || "", "Lịch học": c.days.join(","),
-      "Giờ học": `${c.startTime}-${c.endTime}`, "Phòng": c.room, "Sĩ số": `${enrolled}/${c.maxStudents}`,
-      "Học phí/tháng": c.monthlyFee, "Trạng thái": c.status === "active" ? "Đang hoạt động" : "Tạm dừng",
+      "Tên lớp": c.name, "Môn": c.subject, "Giáo viên": t?.name || "",
+      "Lịch học": (c.schedule || []).map((s) => `${s.day} ${s.startTime}-${s.endTime} (${s.room})`).join(" | "),
+      "Sĩ số": `${enrolled}/${c.maxStudents}`,
+      "Học phí/buổi": c.feePerSession, "Trạng thái": c.status === "active" ? "Đang hoạt động" : "Tạm dừng",
     };
   });
   XLSX.utils.book_append_sheet(wb, sheetFrom(classRows), "Lớp học");
@@ -82,11 +83,24 @@ export function exportFullWorkbook(data) {
   XLSX.writeFile(wb, `Foster-du-lieu-${todayTag()}.xlsx`);
 }
 
+const DAY_CODE_BY_JSDAY = ["CN", "T2", "T3", "T4", "T5", "T6", "T7"];
+function sessionsInMonth(schedule, month, year) {
+  if (!schedule?.length) return 0;
+  const scheduledDays = new Set(schedule.map((s) => s.day));
+  const daysInMonth = new Date(year, month, 0).getDate();
+  let count = 0;
+  for (let d = 1; d <= daysInMonth; d++) {
+    if (scheduledDays.has(DAY_CODE_BY_JSDAY[new Date(year, month - 1, d).getDay()])) count++;
+  }
+  return count;
+}
+
 /** Export báo cáo học phí của 1 tháng cụ thể */
 export function exportMonthlyPaymentReport(rows, month, year) {
   const out = rows.map(({ s, cl, pay }) => ({
     "Học sinh": s.name, "Phụ huynh": s.parentName, "SĐT PH": s.parentPhone, "Lớp": cl.name,
-    "Học phí": pay?.amount ?? cl.monthlyFee,
+    "Số buổi": sessionsInMonth(cl.schedule, month, year),
+    "Học phí": pay?.amount ?? (cl.feePerSession * sessionsInMonth(cl.schedule, month, year)),
     "Trạng thái": !pay ? "Chưa tạo" : pay.status === "paid" ? "Đã thu" : "Chưa thu",
     "Ngày thu": pay?.paidDate ? fmtDateVN(pay.paidDate) : "",
   }));

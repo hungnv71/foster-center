@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback } from "react";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from "recharts";
 import { Home, BookOpen, Users, User, DollarSign, BarChart2, Plus, Edit2, Trash2, Search, X, CheckCircle, GraduationCap, AlertCircle, RefreshCw, Download, Upload, FileSpreadsheet, Wifi, WifiOff, FileUp, ClipboardCheck } from "lucide-react";
-import { supabase, fetchAll, insertRow, insertRows, updateRow, deleteRow, deleteAll, upsertRows, MAPPERS } from "./lib/supabase.js";
+import { supabase, fetchAll, insertRow, insertRows, updateRow, deleteRow, deleteAll, upsertRows, MAPPERS, signIn, signOut, getSession, getMyProfile } from "./lib/supabase.js";
+import { LogOut, Lock } from "lucide-react";
 import { exportFullWorkbook, exportMonthlyPaymentReport, exportSummaryReport } from "./lib/excelExport.js";
 import { parseStudentsExcel, parseTeachersExcel, downloadStudentTemplate, downloadTeacherTemplate } from "./lib/excelImport.js";
 import leafIcon from "./assets/leaf-icon.png";
@@ -20,6 +21,43 @@ const TABLE_ORDER = ["teachers", "classes", "students", "registrations", "paymen
 const DAY_CODE_BY_JSDAY = ["CN", "T2", "T3", "T4", "T5", "T6", "T7"];
 const dayCodeOf = (dateStr) => { const [y, m, d] = dateStr.split("-").map(Number); return DAY_CODE_BY_JSDAY[new Date(y, m - 1, d).getDay()]; };
 const ATT_STATUS = { present: { label: "Có mặt", color: "#10B981" }, absent: { label: "Vắng", color: "#EF4444" }, late: { label: "Muộn", color: "#F5A623" }, excused: { label: "Có phép", color: "#8B5CF6" } };
+const ROOMS = ["P.102", "P.103", "P.104", "P.202", "P.203", "P.204"];
+const MAX_SESSIONS_PER_WEEK = 3;
+
+// Đếm số buổi học của 1 lớp rơi vào 1 tháng/năm cụ thể, dựa trên các thứ trong schedule
+function sessionsInMonth(schedule, month, year) {
+  if (!schedule?.length) return 0;
+  const scheduledDays = new Set(schedule.map((s) => s.day));
+  const daysInMonth = new Date(year, month, 0).getDate();
+  let count = 0;
+  for (let d = 1; d <= daysInMonth; d++) {
+    if (scheduledDays.has(DAY_CODE_BY_JSDAY[new Date(year, month - 1, d).getDay()])) count++;
+  }
+  return count;
+}
+const timesOverlap = (s1, e1, s2, e2) => s1 < e2 && s2 < e1;
+
+// Tìm xung đột (trùng phòng hoặc trùng giáo viên) giữa 1 lớp (đang tạo/sửa) và các lớp khác đang hoạt động
+function findScheduleConflicts(candidate, allClasses) {
+  const conflicts = [];
+  for (const other of allClasses) {
+    if (other.id === candidate.id || other.status !== "active") continue;
+    for (const mySlot of candidate.schedule) {
+      for (const otherSlot of other.schedule) {
+        if (mySlot.day !== otherSlot.day) continue;
+        if (!timesOverlap(mySlot.startTime, mySlot.endTime, otherSlot.startTime, otherSlot.endTime)) continue;
+        if (mySlot.room && mySlot.room === otherSlot.room) {
+          conflicts.push(`Trùng PHÒNG ${mySlot.room} vào ${mySlot.day} (${mySlot.startTime}-${mySlot.endTime}) với lớp "${other.name}"`);
+        }
+        if (candidate.teacherId && candidate.teacherId === other.teacherId) {
+          conflicts.push(`Trùng GIÁO VIÊN vào ${mySlot.day} (${mySlot.startTime}-${mySlot.endTime}) với lớp "${other.name}"`);
+        }
+      }
+    }
+  }
+  return conflicts;
+}
+const scheduleSummary = (schedule) => (schedule || []).map((s) => `${s.day} ${s.startTime}-${s.endTime} (${s.room})`).join(" · ");
 
 // ═══════════════════════════════ SAMPLE DATA (used only for "reset") ═══════════════════════════════
 const SAMPLE_DATA = {
@@ -30,11 +68,11 @@ const SAMPLE_DATA = {
     { id: "t4", name: "Phạm Quốc Tuấn", phone: "0904567890", subject: "Vật Lý", email: "tuan@foster.vn", joinDate: "2024-01-10" },
   ],
   classes: [
-    { id: "c1", name: "Toán 10A", subject: "Toán", teacherId: "t1", days: ["T2", "T4", "T6"], startTime: "17:30", endTime: "19:00", room: "P.101", maxStudents: 20, monthlyFee: 500000, status: "active" },
-    { id: "c2", name: "Toán 11B", subject: "Toán", teacherId: "t1", days: ["T3", "T5"], startTime: "18:00", endTime: "19:30", room: "P.101", maxStudents: 18, monthlyFee: 500000, status: "active" },
-    { id: "c3", name: "Văn 10A", subject: "Ngữ Văn", teacherId: "t2", days: ["T2", "T5"], startTime: "18:00", endTime: "19:30", room: "P.102", maxStudents: 20, monthlyFee: 450000, status: "active" },
-    { id: "c4", name: "Anh 9A", subject: "Tiếng Anh", teacherId: "t3", days: ["T7", "CN"], startTime: "08:00", endTime: "10:00", room: "P.103", maxStudents: 15, monthlyFee: 600000, status: "active" },
-    { id: "c5", name: "Lý 11A", subject: "Vật Lý", teacherId: "t4", days: ["T4", "T7"], startTime: "19:00", endTime: "20:30", room: "P.104", maxStudents: 20, monthlyFee: 500000, status: "active" },
+    { id: "c1", name: "Toán 10A", subject: "Toán", teacherId: "t1", schedule: [{ day: "T2", startTime: "17:30", endTime: "19:00", room: "P.102" }, { day: "T4", startTime: "17:30", endTime: "19:00", room: "P.102" }, { day: "T6", startTime: "17:30", endTime: "19:00", room: "P.102" }], maxStudents: 20, feePerSession: 125000, status: "active" },
+    { id: "c2", name: "Toán 11B", subject: "Toán", teacherId: "t1", schedule: [{ day: "T3", startTime: "18:00", endTime: "19:30", room: "P.103" }, { day: "T5", startTime: "18:00", endTime: "19:30", room: "P.103" }], maxStudents: 18, feePerSession: 125000, status: "active" },
+    { id: "c3", name: "Văn 10A", subject: "Ngữ Văn", teacherId: "t2", schedule: [{ day: "T2", startTime: "19:15", endTime: "20:45", room: "P.102" }, { day: "T5", startTime: "18:00", endTime: "19:30", room: "P.104" }], maxStudents: 20, feePerSession: 110000, status: "active" },
+    { id: "c4", name: "Anh 9A", subject: "Tiếng Anh", teacherId: "t3", schedule: [{ day: "T7", startTime: "08:00", endTime: "10:00", room: "P.202" }, { day: "CN", startTime: "08:00", endTime: "10:00", room: "P.202" }], maxStudents: 15, feePerSession: 150000, status: "active" },
+    { id: "c5", name: "Lý 11A", subject: "Vật Lý", teacherId: "t4", schedule: [{ day: "T4", startTime: "19:00", endTime: "20:30", room: "P.204" }, { day: "T7", startTime: "19:00", endTime: "20:30", room: "P.204" }], maxStudents: 20, feePerSession: 125000, status: "active" },
   ],
   students: [
     { id: "s1", name: "Lê Minh Khoa", phone: "0911111111", parentName: "Lê Văn Hùng", parentPhone: "0911111110", grade: "10", address: "12 Nguyễn Văn Cừ, Q5", joinDate: "2024-09-01" },
@@ -130,15 +168,61 @@ const ActionBtn = ({ icon: Icon, color, onClick, title }) => (
 );
 
 // ═══════════════════════════════ DASHBOARD ═══════════════════════════════
+// ═══════════════════════════════ LOGIN SCREEN ═══════════════════════════════
+function LoginScreen({ onLoggedIn }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setError(""); setLoading(true);
+    try {
+      await signIn(email.trim(), password);
+      onLoggedIn();
+    } catch (err) {
+      setError(err.message === "Invalid login credentials" ? "Sai email hoặc mật khẩu." : "Đăng nhập thất bại. Thử lại.");
+    }
+    setLoading(false);
+  };
+
+  return (
+    <div style={{ height: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: C.bg, fontFamily: "system-ui,-apple-system,sans-serif" }}>
+      <form onSubmit={submit} style={{ background: "#fff", borderRadius: 18, padding: "36px 34px", width: 360, boxShadow: "0 8px 32px rgba(27,58,107,.12)" }}>
+        <div style={{ textAlign: "center", marginBottom: 26 }}>
+          <div style={{ display: "inline-flex", background: C.bg, borderRadius: 14, padding: 12, marginBottom: 12 }}>
+            <Lock size={26} color={C.navy} />
+          </div>
+          <div style={{ fontSize: 22, fontWeight: 800, color: C.navy }}>FOSTER</div>
+          <div style={{ fontSize: 13, color: C.muted, marginTop: 2 }}>Đăng nhập để tiếp tục</div>
+        </div>
+        <Inp label="Email" type="email" required value={email} onChange={(e) => setEmail(e.target.value)} placeholder="ten@foster.vn" autoFocus />
+        <Inp label="Mật khẩu" type="password" required value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" />
+        {error && <div style={{ color: C.red, fontSize: 13, marginBottom: 12, marginTop: -4 }}>{error}</div>}
+        <button type="submit" disabled={loading} style={{ width: "100%", marginTop: 6, padding: "11px 0", borderRadius: 10, border: "none", background: C.navy, color: "#fff", fontSize: 15, fontWeight: 700, cursor: loading ? "default" : "pointer", opacity: loading ? 0.7 : 1 }}>
+          {loading ? "Đang đăng nhập..." : "Đăng nhập"}
+        </button>
+      </form>
+    </div>
+  );
+}
+
 function Dashboard({ data }) {
   const now = new Date();
   const [cm, cy] = [now.getMonth() + 1, now.getFullYear()];
+  const todayStr_ = todayStr();
+  const todayCode = dayCodeOf(todayStr_);
   const activeRegs = data.registrations.filter((r) => r.status === "active");
   const mPays = data.payments.filter((p) => p.month === cm && p.year === cy);
   const paidRev = mPays.filter((p) => p.status === "paid").reduce((s, p) => s + p.amount, 0);
   const unpaidPays = mPays.filter((p) => p.status === "unpaid");
   const activeClasses = data.classes.filter((c) => c.status === "active");
   const uniqueStudents = [...new Set(activeRegs.map((r) => r.studentId))];
+
+  const todaySessions = activeClasses
+    .flatMap((cls) => (cls.schedule || []).filter((s) => s.day === todayCode).map((slot) => ({ cls, slot })))
+    .sort((a, b) => a.slot.startTime.localeCompare(b.slot.startTime));
 
   const revenueData = Array.from({ length: 6 }, (_, i) => {
     const d = new Date(cy, cm - 1 - i, 1);
@@ -161,7 +245,32 @@ function Dashboard({ data }) {
         <StatCard icon={DollarSign} label={`Đã thu T${cm}/${cy}`} value={fmtMoney(paidRev)} color={C.amber}
           sub={unpaidPays.length ? `⚠ Còn ${unpaidPays.length} khoản chưa thu` : "✓ Thu đầy đủ rồi!"} />
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 320px", gap: 18, marginBottom: 18 }}>
+      <Card title={`🗓 Thời khóa biểu hôm nay — ${todayCode}, ${new Date().toLocaleDateString("vi-VN")}`}>
+        {todaySessions.length === 0
+          ? <div style={{ textAlign: "center", padding: "20px 0", color: C.muted, fontSize: 13 }}>Hôm nay không có lớp nào theo lịch cố định.</div>
+          : <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
+                <thead><tr style={{ background: C.bg }}>{["Giờ học", "Lớp", "Môn", "Giáo viên", "Phòng", "Sĩ số"].map((h) => <Th key={h}>{h}</Th>)}</tr></thead>
+                <tbody>
+                  {todaySessions.map(({ cls, slot }, i) => {
+                    const t = data.teachers.find((x) => x.id === cls.teacherId);
+                    const enrolled = data.registrations.filter((r) => r.classId === cls.id && r.status === "active").length;
+                    return (
+                      <tr key={i} style={{ borderBottom: `1px solid ${C.border}` }}>
+                        <Td style={{ fontWeight: 700, color: C.navy }}>{slot.startTime}–{slot.endTime}</Td>
+                        <Td style={{ fontWeight: 700, color: C.text }}>{cls.name}</Td>
+                        <Td><Badge color={C.blue}>{cls.subject}</Badge></Td>
+                        <Td style={{ color: C.text }}>{t?.name || <span style={{ color: C.red }}>Chưa phân công</span>}</Td>
+                        <Td><Badge color={C.purple}>{slot.room}</Badge></Td>
+                        <Td style={{ color: C.muted }}>{enrolled}/{cls.maxStudents}</Td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>}
+      </Card>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 320px", gap: 18, marginBottom: 18, marginTop: 20 }}>
         <Card title="📈 Doanh thu 6 tháng gần nhất">
           <ResponsiveContainer width="100%" height={190}>
             <BarChart data={revenueData}><CartesianGrid strokeDasharray="3 3" stroke="#f0f4f8" />
@@ -204,7 +313,7 @@ function Dashboard({ data }) {
                     <Td style={{ fontWeight: 700, color: C.text }}>{cls.name}</Td>
                     <Td><Badge color={C.blue}>{cls.subject}</Badge></Td>
                     <Td style={{ color: C.text }}>{t?.name || <span style={{ color: C.red }}>Chưa phân công</span>}</Td>
-                    <Td style={{ color: C.muted, fontSize: 12 }}>{cls.days.join(",")} · {cls.startTime}–{cls.endTime}</Td>
+                    <Td style={{ color: C.muted, fontSize: 12 }}>{scheduleSummary(cls.schedule)}</Td>
                     <Td>
                       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                         <div style={{ flex: 1, background: C.bg, borderRadius: 4, height: 7, minWidth: 60 }}>
@@ -226,13 +335,17 @@ function Dashboard({ data }) {
 }
 
 // ═══════════════════════════════ CLASSES VIEW ═══════════════════════════════
-function ClassesView({ data, api }) {
+function ClassesView({ data, api, isAdmin }) {
   const [search, setSearch] = useState("");
+  const [subjectFilter, setSubjectFilter] = useState("");
   const [modal, setModal] = useState(null);
   const [confirmDel, setConfirmDel] = useState(null);
   const [viewStu, setViewStu] = useState(null);
-  const blank = { name: "", subject: "Toán", teacherId: "", days: [], startTime: "17:00", endTime: "18:30", room: "", maxStudents: 20, monthlyFee: 500000, status: "active" };
-  const filtered = data.classes.filter((c) => c.name.toLowerCase().includes(search.toLowerCase()) || c.subject.toLowerCase().includes(search.toLowerCase()));
+  const blank = { name: "", subject: "Toán", teacherId: "", schedule: [], maxStudents: 20, feePerSession: 125000, status: "active" };
+  const usedSubjects = [...new Set(data.classes.map((c) => c.subject))];
+  const filtered = data.classes
+    .filter((c) => c.name.toLowerCase().includes(search.toLowerCase()) || c.subject.toLowerCase().includes(search.toLowerCase()))
+    .filter((c) => !subjectFilter || c.subject === subjectFilter);
 
   const handleSave = async (cls) => {
     setModal(null);
@@ -243,16 +356,20 @@ function ClassesView({ data, api }) {
   return (
     <div>
       <Card title={`Danh sách lớp học (${filtered.length})`} action={
-        <div style={{ display: "flex", gap: 10 }}>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
           <div style={{ position: "relative" }}><Search size={15} style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: C.muted }} />
-            <input placeholder="Tìm lớp..." value={search} onChange={(e) => setSearch(e.target.value)} style={{ padding: "8px 12px 8px 32px", borderRadius: 8, border: `1.5px solid ${C.border}`, fontSize: 14, width: 200, outline: "none" }} /></div>
+            <input placeholder="Tìm lớp..." value={search} onChange={(e) => setSearch(e.target.value)} style={{ padding: "8px 12px 8px 32px", borderRadius: 8, border: `1.5px solid ${C.border}`, fontSize: 14, width: 180, outline: "none" }} /></div>
+          <select value={subjectFilter} onChange={(e) => setSubjectFilter(e.target.value)} style={{ padding: "8px 12px", borderRadius: 8, border: `1.5px solid ${C.border}`, fontSize: 14, outline: "none" }}>
+            <option value="">Tất cả môn</option>
+            {usedSubjects.map((s) => <option key={s} value={s}>{s}</option>)}
+          </select>
           <Btn color={C.blue} onClick={() => setModal({ cls: { ...blank } })}><Plus size={15} />Thêm lớp</Btn>
         </div>
       }>
         <div style={{ overflowX: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
             <thead><tr style={{ background: C.bg }}>
-              {["Tên lớp", "Môn", "Giáo viên", "Lịch học", "Phòng", "Học phí", "Sĩ số", ""].map((h, i) => <Th key={i}>{h}</Th>)}
+              {["Tên lớp", "Môn", "Giáo viên", "Lịch học", "Học phí/buổi", "Sĩ số", ""].map((h, i) => <Th key={i}>{h}</Th>)}
             </tr></thead>
             <tbody>
               {filtered.map((cls) => {
@@ -263,25 +380,24 @@ function ClassesView({ data, api }) {
                     <Td style={{ fontWeight: 700, color: C.text }}>{cls.name}</Td>
                     <Td><Badge color={C.blue}>{cls.subject}</Badge></Td>
                     <Td style={{ color: C.text }}>{t?.name || <span style={{ color: C.red, fontSize: 12 }}>Chưa có GV</span>}</Td>
-                    <Td style={{ color: C.muted, fontSize: 12 }}>{cls.days.join(",")} {cls.startTime}–{cls.endTime}</Td>
-                    <Td style={{ color: C.text }}>{cls.room || "—"}</Td>
-                    <Td style={{ color: C.amber, fontWeight: 700 }}>{fmtMoney(cls.monthlyFee)}</Td>
+                    <Td style={{ color: C.muted, fontSize: 12 }}>{scheduleSummary(cls.schedule)}</Td>
+                    <Td style={{ color: C.amber, fontWeight: 700 }}>{fmtMoney(cls.feePerSession)}</Td>
                     <Td style={{ color: enrolled >= cls.maxStudents ? C.red : C.text, fontWeight: 600 }}>{enrolled}/{cls.maxStudents}</Td>
                     <Td><div style={{ display: "flex", gap: 5 }}>
                       <ActionBtn icon={Users} color={C.blue} onClick={() => setViewStu(cls.id)} title="Xem học sinh" />
                       <ActionBtn icon={Edit2} color={C.amber} onClick={() => setModal({ cls: { ...cls } })} title="Sửa" />
-                      <ActionBtn icon={Trash2} color={C.red} onClick={() => setConfirmDel(cls.id)} title="Xóa" />
+                      {isAdmin && <ActionBtn icon={Trash2} color={C.red} onClick={() => setConfirmDel(cls.id)} title="Xóa" />}
                     </div></Td>
                   </tr>
                 );
               })}
-              {!filtered.length && <tr><td colSpan={8} style={{ padding: "32px", textAlign: "center", color: C.muted }}>Không tìm thấy lớp học</td></tr>}
+              {!filtered.length && <tr><td colSpan={7} style={{ padding: "32px", textAlign: "center", color: C.muted }}>Không tìm thấy lớp học</td></tr>}
             </tbody>
           </table>
         </div>
       </Card>
       <Modal open={!!modal} onClose={() => setModal(null)} title={modal?.cls.id ? "Chỉnh sửa lớp học" : "Thêm lớp học"}>
-        {modal && <ClassForm cls={modal.cls} teachers={data.teachers} onSave={handleSave} onCancel={() => setModal(null)} />}
+        {modal && <ClassForm cls={modal.cls} teachers={data.teachers} allClasses={data.classes} onSave={handleSave} onCancel={() => setModal(null)} />}
       </Modal>
       <Modal open={!!confirmDel} onClose={() => setConfirmDel(null)} title="Xác nhận xóa lớp">
         <p style={{ color: C.text, marginBottom: 20 }}>Xóa lớp này sẽ xóa toàn bộ đăng ký và dữ liệu học phí liên quan. Tiếp tục?</p>
@@ -293,10 +409,40 @@ function ClassesView({ data, api }) {
     </div>
   );
 }
-function ClassForm({ cls, teachers, onSave, onCancel }) {
+
+function ClassForm({ cls, teachers, allClasses, onSave, onCancel }) {
   const [f, setF] = useState(cls);
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
-  const toggleDay = (d) => set("days", f.days.includes(d) ? f.days.filter((x) => x !== d) : [...f.days, d]);
+
+  const scheduleDays = f.schedule.map((s) => s.day);
+  const toggleDay = (d) => {
+    if (scheduleDays.includes(d)) {
+      set("schedule", f.schedule.filter((s) => s.day !== d));
+    } else {
+      if (f.schedule.length >= MAX_SESSIONS_PER_WEEK) return alert(`Tối đa ${MAX_SESSIONS_PER_WEEK} buổi/tuần cho 1 lớp học.`);
+      set("schedule", [...f.schedule, { day: d, startTime: "17:30", endTime: "19:00", room: ROOMS[0] }].sort((a, b) => DAYS.indexOf(a.day) - DAYS.indexOf(b.day)));
+    }
+  };
+  const updateSlot = (day, key, value) => set("schedule", f.schedule.map((s) => (s.day === day ? { ...s, [key]: value } : s)));
+
+  // room options for a given day/time slot, flagging ones already booked elsewhere at an overlapping time
+  const roomConflictFor = (day, startTime, endTime, room) => {
+    if (!startTime || !endTime) return false;
+    return allClasses.some((other) => other.id !== f.id && other.status === "active" &&
+      other.schedule.some((s) => s.day === day && s.room === room && timesOverlap(startTime, endTime, s.startTime, s.endTime)));
+  };
+
+  const save = () => {
+    if (!f.name.trim()) return alert("Nhập tên lớp!");
+    if (!f.schedule.length) return alert("Chọn ít nhất 1 buổi học trong tuần!");
+    const conflicts = findScheduleConflicts(f, allClasses);
+    if (conflicts.length) {
+      const proceed = confirm(`⚠ Phát hiện xung đột lịch:\n\n${conflicts.join("\n")}\n\nLớp đã có lịch trước đó được giữ nguyên. Vẫn lưu lớp này?`);
+      if (!proceed) return;
+    }
+    onSave(f);
+  };
+
   return (
     <div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
@@ -307,24 +453,38 @@ function ClassForm({ cls, teachers, onSave, onCancel }) {
         </Sel>
       </div>
       <div style={{ marginBottom: 14 }}>
-        <label style={{ display: "block", marginBottom: 6, fontSize: 13, fontWeight: 600, color: C.text }}>Lịch học</label>
-        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>{DAYS.map((d) => (
-          <button key={d} onClick={() => toggleDay(d)} style={{ padding: "6px 14px", borderRadius: 8, border: `2px solid ${f.days.includes(d) ? C.blue : C.border}`, background: f.days.includes(d) ? C.blue + "18" : "#fff", color: f.days.includes(d) ? C.blue : C.muted, fontWeight: 600, cursor: "pointer", fontSize: 13 }}>{d}</button>
+        <label style={{ display: "block", marginBottom: 6, fontSize: 13, fontWeight: 600, color: C.text }}>Lịch học (tối đa {MAX_SESSIONS_PER_WEEK} buổi/tuần) — {f.schedule.length}/{MAX_SESSIONS_PER_WEEK}</label>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>{DAYS.map((d) => (
+          <button key={d} onClick={() => toggleDay(d)} style={{ padding: "6px 14px", borderRadius: 8, border: `2px solid ${scheduleDays.includes(d) ? C.blue : C.border}`, background: scheduleDays.includes(d) ? C.blue + "18" : "#fff", color: scheduleDays.includes(d) ? C.blue : C.muted, fontWeight: 600, cursor: "pointer", fontSize: 13 }}>{d}</button>
         ))}</div>
+        {f.schedule.map((slot) => {
+          const conflict = roomConflictFor(slot.day, slot.startTime, slot.endTime, slot.room);
+          return (
+            <div key={slot.day} style={{ display: "grid", gridTemplateColumns: "44px 1fr 1fr 1fr", gap: 8, alignItems: "center", padding: "8px 10px", background: C.bg, borderRadius: 8, marginBottom: 6 }}>
+              <div style={{ fontWeight: 700, color: C.navy, fontSize: 13 }}>{slot.day}</div>
+              <input type="time" value={slot.startTime} onChange={(e) => updateSlot(slot.day, "startTime", e.target.value)} style={{ padding: "6px 8px", borderRadius: 6, border: `1px solid ${C.border}`, fontSize: 13 }} />
+              <input type="time" value={slot.endTime} onChange={(e) => updateSlot(slot.day, "endTime", e.target.value)} style={{ padding: "6px 8px", borderRadius: 6, border: `1px solid ${C.border}`, fontSize: 13 }} />
+              <select value={slot.room} onChange={(e) => updateSlot(slot.day, "room", e.target.value)} style={{ padding: "6px 8px", borderRadius: 6, border: `1px solid ${conflict ? C.red : C.border}`, fontSize: 13, color: conflict ? C.red : C.text }}>
+                {ROOMS.map((r) => {
+                  const busy = roomConflictFor(slot.day, slot.startTime, slot.endTime, r);
+                  return <option key={r} value={r}>{r}{busy ? " ⚠ trùng" : ""}</option>;
+                })}
+              </select>
+            </div>
+          );
+        })}
+        {!f.schedule.length && <div style={{ fontSize: 12, color: C.muted, fontStyle: "italic" }}>Chưa chọn thứ nào — bấm vào các nút thứ ở trên</div>}
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-        <Inp label="Giờ bắt đầu" type="time" value={f.startTime} onChange={(e) => set("startTime", e.target.value)} />
-        <Inp label="Giờ kết thúc" type="time" value={f.endTime} onChange={(e) => set("endTime", e.target.value)} />
-        <Inp label="Phòng học" value={f.room} onChange={(e) => set("room", e.target.value)} placeholder="P.101" />
         <Inp label="Sĩ số tối đa" type="number" value={f.maxStudents} onChange={(e) => set("maxStudents", +e.target.value)} />
-        <Inp label="Học phí / tháng (đ)" type="number" value={f.monthlyFee} onChange={(e) => set("monthlyFee", +e.target.value)} />
+        <Inp label="Học phí / buổi (đ)" type="number" value={f.feePerSession} onChange={(e) => set("feePerSession", +e.target.value)} />
         <Sel label="Trạng thái" value={f.status} onChange={(e) => set("status", e.target.value)}>
           <option value="active">Đang hoạt động</option><option value="inactive">Tạm dừng</option>
         </Sel>
       </div>
       <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 4 }}>
         <Btn color={C.muted} outlined onClick={onCancel}>Hủy</Btn>
-        <Btn color={C.blue} onClick={() => { if (!f.name.trim()) return alert("Nhập tên lớp!"); onSave(f); }}>💾 Lưu</Btn>
+        <Btn color={C.blue} onClick={save}>💾 Lưu</Btn>
       </div>
     </div>
   );
@@ -406,15 +566,18 @@ function ImportPreview({ items, errors, warnings, itemNoun, color, onCancel, onC
   );
 }
 
-function StudentsView({ data, api }) {
+function StudentsView({ data, api, isAdmin }) {
   const [search, setSearch] = useState("");
+  const [gradeFilter, setGradeFilter] = useState("");
   const [modal, setModal] = useState(null);
   const [confirmDel, setConfirmDel] = useState(null);
   const [viewCls, setViewCls] = useState(null);
   const [importPreview, setImportPreview] = useState(null);
   const [importing, setImporting] = useState(false);
   const blank = { name: "", phone: "", parentName: "", parentPhone: "", grade: "10", address: "", joinDate: todayStr() };
-  const filtered = data.students.filter((s) => s.name.toLowerCase().includes(search.toLowerCase()) || s.phone.includes(search) || s.grade.includes(search));
+  const filtered = data.students
+    .filter((s) => s.name.toLowerCase().includes(search.toLowerCase()) || s.phone.includes(search) || s.grade.includes(search))
+    .filter((s) => !gradeFilter || s.grade === gradeFilter);
   const countCls = (id) => data.registrations.filter((r) => r.studentId === id && r.status === "active").length;
   const handleSave = async (s) => { setModal(null); if (s.id) await api.updateStudent(s); else await api.addStudent(s); };
   const handleDel = async (id) => { setConfirmDel(null); await api.deleteStudent(id); };
@@ -448,9 +611,13 @@ function StudentsView({ data, api }) {
   return (
     <div>
       <Card title={`Danh sách học sinh (${filtered.length})`} action={
-        <div style={{ display: "flex", gap: 10 }}>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
           <div style={{ position: "relative" }}><Search size={15} style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: C.muted }} />
             <input placeholder="Tìm học sinh..." value={search} onChange={(e) => setSearch(e.target.value)} style={{ padding: "8px 12px 8px 32px", borderRadius: 8, border: `1.5px solid ${C.border}`, fontSize: 14, width: 220, outline: "none" }} /></div>
+          <select value={gradeFilter} onChange={(e) => setGradeFilter(e.target.value)} style={{ padding: "8px 12px", borderRadius: 8, border: `1.5px solid ${C.border}`, fontSize: 14, outline: "none" }}>
+            <option value="">Tất cả khối</option>
+            {GRADES.map((g) => <option key={g} value={g}>Lớp {g}</option>)}
+          </select>
           <Btn color={C.green} onClick={() => setModal({ student: { ...blank } })}><Plus size={15} />Thêm học sinh</Btn>
           <Btn color={C.blue} outlined onClick={startImport}><FileUp size={15} />Nhập Excel</Btn>
         </div>
@@ -473,7 +640,7 @@ function StudentsView({ data, api }) {
                   </Td>
                   <Td><div style={{ display: "flex", gap: 5 }}>
                     <ActionBtn icon={Edit2} color={C.amber} onClick={() => setModal({ student: { ...s } })} title="Sửa" />
-                    <ActionBtn icon={Trash2} color={C.red} onClick={() => setConfirmDel(s.id)} title="Xóa" />
+                    {isAdmin && <ActionBtn icon={Trash2} color={C.red} onClick={() => setConfirmDel(s.id)} title="Xóa" />}
                   </div></Td>
                 </tr>
               ))}
@@ -545,14 +712,14 @@ function ClassesOfStudent({ studentId, data, api }) {
       </div>
       {show && <div style={{ display: "flex", gap: 8, marginBottom: 12, padding: 12, background: C.bg, borderRadius: 10 }}>
         <select value={sel} onChange={(e) => setSel(e.target.value)} style={{ flex: 1, padding: "8px 12px", borderRadius: 8, border: `1.5px solid ${C.border}`, fontSize: 14, outline: "none" }}>
-          <option value="">-- Chọn lớp --</option>{avail.map((c) => <option key={c.id} value={c.id}>{c.name} · {c.subject} · {c.days.join(",")} {c.startTime}</option>)}
+          <option value="">-- Chọn lớp --</option>{avail.map((c) => <option key={c.id} value={c.id}>{c.name} · {c.subject} · {scheduleSummary(c.schedule)}</option>)}
         </select>
         <Btn color={C.blue} onClick={add}>Đăng ký</Btn><Btn color={C.muted} outlined onClick={() => setShow(false)}>Hủy</Btn>
       </div>}
       {regs.map((r) => { const cl = data.classes.find((c) => c.id === r.classId); return cl ? (
         <div key={r.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "11px 0", borderBottom: `1px solid ${C.border}` }}>
           <div><div style={{ fontWeight: 700, color: C.text }}>{cl.name}</div>
-          <div style={{ fontSize: 12, color: C.muted }}>{cl.subject} · {cl.days.join(",")} · {cl.startTime}–{cl.endTime} · {fmtMoney(cl.monthlyFee)}/tháng</div></div>
+          <div style={{ fontSize: 12, color: C.muted }}>{cl.subject} · {scheduleSummary(cl.schedule)} · {fmtMoney(cl.feePerSession)}/buổi</div></div>
           <ActionBtn icon={Trash2} color={C.red} onClick={() => remove(r.id)} title="Hủy đăng ký" />
         </div>
       ) : null; })}
@@ -562,7 +729,7 @@ function ClassesOfStudent({ studentId, data, api }) {
 }
 
 // ═══════════════════════════════ TEACHERS VIEW ═══════════════════════════════
-function TeachersView({ data, api }) {
+function TeachersView({ data, api, isAdmin }) {
   const [search, setSearch] = useState("");
   const [modal, setModal] = useState(null);
   const [confirmDel, setConfirmDel] = useState(null);
@@ -607,7 +774,7 @@ function TeachersView({ data, api }) {
                   </div>
                   <div style={{ display: "flex", gap: 5 }}>
                     <ActionBtn icon={Edit2} color={C.amber} onClick={() => setModal({ teacher: { ...t } })} title="Sửa" />
-                    <ActionBtn icon={Trash2} color={C.red} onClick={() => setConfirmDel(t.id)} title="Xóa" />
+                    {isAdmin && <ActionBtn icon={Trash2} color={C.red} onClick={() => setConfirmDel(t.id)} title="Xóa" />}
                   </div>
                 </div>
                 <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.8 }}>
@@ -668,10 +835,11 @@ function AttendanceView({ data, api }) {
   const [showAllClasses, setShowAllClasses] = useState(false);
   const [statusMap, setStatusMap] = useState({});
   const [saving, setSaving] = useState(false);
+  const [viewFilter, setViewFilter] = useState("all"); // all | present | absent | late | excused
 
   const dayCode = dayCodeOf(date);
   const activeClasses = data.classes.filter((c) => c.status === "active");
-  const relevantClasses = showAllClasses ? activeClasses : activeClasses.filter((c) => c.days.includes(dayCode));
+  const relevantClasses = showAllClasses ? activeClasses : activeClasses.filter((c) => (c.schedule || []).some((s) => s.day === dayCode));
   const classList = relevantClasses.length ? relevantClasses : activeClasses; // fallback if nothing scheduled that day
 
   useEffect(() => {
@@ -714,6 +882,7 @@ function AttendanceView({ data, api }) {
   const counts = { present: 0, absent: 0, late: 0, excused: 0 };
   roster.forEach((s) => { const st = statusMap[s.id]?.status || "present"; counts[st] = (counts[st] || 0) + 1; });
   const alreadySaved = roster.length > 0 && roster.every((s) => existing[s.id]);
+  const visibleRoster = roster.filter((s) => viewFilter === "all" || (statusMap[s.id]?.status || "present") === viewFilter);
 
   return (
     <div>
@@ -722,7 +891,7 @@ function AttendanceView({ data, api }) {
           <input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={{ padding: "7px 12px", borderRadius: 8, border: `1.5px solid ${C.border}`, fontSize: 14, outline: "none" }} />
           <select value={classId} onChange={(e) => setClassId(e.target.value)} style={{ padding: "7px 12px", borderRadius: 8, border: `1.5px solid ${C.border}`, fontSize: 14, outline: "none", minWidth: 200 }}>
             {classList.length === 0 && <option value="">Chưa có lớp</option>}
-            {classList.map((c) => <option key={c.id} value={c.id}>{c.name} ({c.days.join(",")} {c.startTime})</option>)}
+            {classList.map((c) => <option key={c.id} value={c.id}>{c.name} ({scheduleSummary(c.schedule)})</option>)}
           </select>
           <label style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 13, color: C.muted, cursor: "pointer" }}>
             <input type="checkbox" checked={showAllClasses} onChange={(e) => setShowAllClasses(e.target.checked)} />
@@ -739,21 +908,23 @@ function AttendanceView({ data, api }) {
           <>
             <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
               {Object.entries(ATT_STATUS).map(([key, v]) => (
-                <div key={key} style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 12px", borderRadius: 8, background: v.color + "15" }}>
+                <button key={key} onClick={() => setViewFilter(viewFilter === key ? "all" : key)}
+                  style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 12px", borderRadius: 8, background: v.color + "15", border: viewFilter === key ? `1.5px solid ${v.color}` : "1.5px solid transparent", cursor: "pointer" }}>
                   <span style={{ width: 8, height: 8, borderRadius: 99, background: v.color }} />
                   <span style={{ fontSize: 13, color: C.text }}>{v.label}: <b>{counts[key] || 0}</b></span>
-                </div>
+                </button>
               ))}
+              {viewFilter !== "all" && <Btn color={C.muted} outlined style={{ padding: "5px 12px", fontSize: 12.5 }} onClick={() => setViewFilter("all")}>✕ Bỏ lọc</Btn>}
               {alreadySaved && <Badge color={C.blue}>Đã lưu điểm danh buổi này</Badge>}
             </div>
             <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
               <Btn color={C.green} outlined style={{ padding: "6px 12px", fontSize: 13 }} onClick={() => markAll("present")}>Đánh dấu tất cả Có mặt</Btn>
             </div>
             <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, overflow: "hidden" }}>
-              {roster.map((s, i) => {
+              {visibleRoster.map((s, i) => {
                 const st = statusMap[s.id]?.status || "present";
                 return (
-                  <div key={s.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", borderBottom: i < roster.length - 1 ? `1px solid ${C.border}` : "none", flexWrap: "wrap" }}>
+                  <div key={s.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", borderBottom: i < visibleRoster.length - 1 ? `1px solid ${C.border}` : "none", flexWrap: "wrap" }}>
                     <div style={{ minWidth: 160, fontWeight: 700, color: C.text, fontSize: 14 }}>{s.name}</div>
                     <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                       {Object.entries(ATT_STATUS).map(([key, v]) => (
@@ -769,6 +940,7 @@ function AttendanceView({ data, api }) {
                 );
               })}
               {!roster.length && <div style={{ padding: "32px", textAlign: "center", color: C.muted }}>Lớp này chưa có học sinh đăng ký</div>}
+              {roster.length > 0 && !visibleRoster.length && <div style={{ padding: "32px", textAlign: "center", color: C.muted }}>Không có học sinh nào khớp bộ lọc</div>}
             </div>
             {roster.length > 0 && (
               <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 16 }}>
@@ -788,8 +960,10 @@ function PaymentsView({ data, api }) {
   const [month, setMonth] = useState(now.getMonth() + 1);
   const [year, setYear] = useState(now.getFullYear());
   const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState(""); // "" | paid | unpaid
   const activeRegs = data.registrations.filter((r) => r.status === "active");
   const mPays = data.payments.filter((p) => p.month === month && p.year === year);
+  const amountFor = (cl) => cl.feePerSession * sessionsInMonth(cl.schedule, month, year);
 
   const rows = activeRegs.map((r) => {
     const s = data.students.find((x) => x.id === r.studentId);
@@ -797,21 +971,24 @@ function PaymentsView({ data, api }) {
     if (!s || !cl) return null;
     const pay = mPays.find((p) => p.studentId === r.studentId && p.classId === r.classId);
     return { r, s, cl, pay };
-  }).filter(Boolean).filter((row) => row.s.name.toLowerCase().includes(search.toLowerCase()) || row.cl.name.toLowerCase().includes(search.toLowerCase()));
+  }).filter(Boolean)
+    .filter((row) => row.s.name.toLowerCase().includes(search.toLowerCase()) || row.cl.name.toLowerCase().includes(search.toLowerCase()))
+    .filter((row) => !statusFilter || (statusFilter === "paid" ? row.pay?.status === "paid" : row.pay?.status !== "paid"));
 
-  const totalExpected = rows.reduce((sum, r) => sum + (r.pay?.amount || r.cl.monthlyFee), 0);
+  const totalExpected = rows.reduce((sum, r) => sum + (r.pay?.amount ?? amountFor(r.cl)), 0);
   const totalPaid = rows.filter((r) => r.pay?.status === "paid").reduce((sum, r) => sum + r.pay.amount, 0);
-  const totalUnpaid = rows.filter((r) => !r.pay || r.pay.status === "unpaid").reduce((sum, r) => sum + (r.pay?.amount || r.cl.monthlyFee), 0);
+  const totalUnpaid = rows.filter((r) => !r.pay || r.pay.status === "unpaid").reduce((sum, r) => sum + (r.pay?.amount ?? amountFor(r.cl)), 0);
+  const unpaidCount = rows.filter((r) => !r.pay || r.pay.status === "unpaid").length;
 
   const markPaid = async (row) => {
     if (row.pay) await api.updatePaymentStatus(row.pay.id, "paid", todayStr());
-    else await api.addPayment({ id: genId(), studentId: row.s.id, classId: row.cl.id, month, year, amount: row.cl.monthlyFee, paidDate: todayStr(), status: "paid" });
+    else await api.addPayment({ id: genId(), studentId: row.s.id, classId: row.cl.id, month, year, amount: amountFor(row.cl), paidDate: todayStr(), status: "paid" });
   };
   const markUnpaid = async (row) => { if (row.pay) await api.updatePaymentStatus(row.pay.id, "unpaid", null); };
   const generate = async () => {
     const ex = new Set(mPays.map((p) => `${p.studentId}-${p.classId}`));
     const news = activeRegs.filter((r) => { const cl = data.classes.find((c) => c.id === r.classId); return cl && !ex.has(`${r.studentId}-${r.classId}`); })
-      .map((r) => { const cl = data.classes.find((c) => c.id === r.classId); return { id: genId(), studentId: r.studentId, classId: r.classId, month, year, amount: cl.monthlyFee, paidDate: null, status: "unpaid" }; });
+      .map((r) => { const cl = data.classes.find((c) => c.id === r.classId); return { id: genId(), studentId: r.studentId, classId: r.classId, month, year, amount: amountFor(cl), paidDate: null, status: "unpaid" }; });
     if (!news.length) return alert("Đã có đầy đủ bản ghi cho tháng này!");
     await api.addPayments(news);
   };
@@ -831,6 +1008,11 @@ function PaymentsView({ data, api }) {
           <select value={year} onChange={(e) => setYear(+e.target.value)} style={{ padding: "7px 12px", borderRadius: 8, border: `1.5px solid ${C.border}`, fontSize: 14, outline: "none" }}>
             {[year - 1, year, year + 1].map((y) => <option key={y} value={y}>{y}</option>)}
           </select>
+          <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} style={{ padding: "7px 12px", borderRadius: 8, border: `1.5px solid ${statusFilter === "unpaid" ? C.red : C.border}`, fontSize: 14, outline: "none", color: statusFilter === "unpaid" ? C.red : C.text }}>
+            <option value="">Tất cả trạng thái</option>
+            <option value="unpaid">⚠ Chưa thu ({unpaidCount})</option>
+            <option value="paid">✓ Đã thu</option>
+          </select>
           <div style={{ position: "relative" }}><Search size={14} style={{ position: "absolute", left: 9, top: "50%", transform: "translateY(-50%)", color: C.muted }} />
             <input placeholder="Tìm..." value={search} onChange={(e) => setSearch(e.target.value)} style={{ padding: "7px 12px 7px 30px", borderRadius: 8, border: `1.5px solid ${C.border}`, fontSize: 14, width: 140, outline: "none" }} /></div>
           <Btn color={C.blue} onClick={generate}><RefreshCw size={14} />Tạo bản ghi</Btn>
@@ -839,13 +1021,14 @@ function PaymentsView({ data, api }) {
       }>
         <div style={{ overflowX: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
-            <thead><tr style={{ background: C.bg }}>{["Học sinh", "Lớp", "Học phí", "Trạng thái", "Ngày thu", "Thao tác"].map((h, i) => <Th key={i}>{h}</Th>)}</tr></thead>
+            <thead><tr style={{ background: C.bg }}>{["Học sinh", "Lớp", "Số buổi", "Học phí", "Trạng thái", "Ngày thu", "Thao tác"].map((h, i) => <Th key={i}>{h}</Th>)}</tr></thead>
             <tbody>
               {rows.map((row, i) => (
                 <tr key={i} style={{ borderBottom: `1px solid ${C.border}` }} onMouseEnter={(e) => (e.currentTarget.style.background = "#f8fafc")} onMouseLeave={(e) => (e.currentTarget.style.background = "")}>
                   <Td style={{ fontWeight: 700, color: C.text }}>{row.s.name}</Td>
                   <Td><Badge color={C.blue}>{row.cl.name}</Badge></Td>
-                  <Td style={{ fontWeight: 700, color: C.amber }}>{fmtMoney(row.pay?.amount || row.cl.monthlyFee)}</Td>
+                  <Td style={{ color: C.muted }}>{sessionsInMonth(row.cl.schedule, month, year)} buổi</Td>
+                  <Td style={{ fontWeight: 700, color: C.amber }}>{fmtMoney(row.pay?.amount ?? amountFor(row.cl))}</Td>
                   <Td>
                     {!row.pay ? <Badge color={C.muted}>Chưa tạo</Badge>
                       : row.pay.status === "paid" ? <Badge color={C.green}>✓ Đã thu</Badge>
@@ -859,7 +1042,7 @@ function PaymentsView({ data, api }) {
                   </Td>
                 </tr>
               ))}
-              {!rows.length && <tr><td colSpan={6} style={{ padding: "32px", textAlign: "center", color: C.muted }}>Không có dữ liệu — nhấn "Tạo bản ghi" để bắt đầu</td></tr>}
+              {!rows.length && <tr><td colSpan={7} style={{ padding: "32px", textAlign: "center", color: C.muted }}>Không có dữ liệu khớp bộ lọc</td></tr>}
             </tbody>
           </table>
         </div>
@@ -938,7 +1121,8 @@ const NAV = [
   { id: "reports", icon: BarChart2, label: "Báo cáo" },
 ];
 
-export default function FosterApp() {
+function AuthenticatedApp({ profile, onSignOut }) {
+  const isAdmin = profile?.role === "admin";
   const [data, setData] = useState(null);
   const [tab, setTab] = useState("dashboard");
   const [loading, setLoading] = useState(true);
@@ -1116,11 +1300,24 @@ export default function FosterApp() {
             <button onClick={exportJSON} title="Tải file backup JSON về máy" style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 5, padding: "8px 0", borderRadius: 8, border: "1px solid rgba(255,255,255,.15)", cursor: "pointer", background: "rgba(255,255,255,.08)", color: "rgba(255,255,255,.8)", fontSize: 12, fontWeight: 600 }}>
               <Download size={13} />Export
             </button>
-            <button onClick={importJSON} title="Khôi phục từ file backup JSON" style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 5, padding: "8px 0", borderRadius: 8, border: "1px solid rgba(255,255,255,.15)", cursor: "pointer", background: "rgba(255,255,255,.08)", color: "rgba(255,255,255,.8)", fontSize: 12, fontWeight: 600 }}>
-              <Upload size={13} />Import
+            {isAdmin && (
+              <button onClick={importJSON} title="Khôi phục từ file backup JSON" style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 5, padding: "8px 0", borderRadius: 8, border: "1px solid rgba(255,255,255,.15)", cursor: "pointer", background: "rgba(255,255,255,.08)", color: "rgba(255,255,255,.8)", fontSize: 12, fontWeight: 600 }}>
+                <Upload size={13} />Import
+              </button>
+            )}
+          </div>
+          {isAdmin && (
+            <button onClick={resetToSample} style={{ width: "100%", background: "none", border: "none", cursor: "pointer", color: "rgba(255,255,255,.25)", fontSize: 11, textAlign: "left", padding: "4px 0", marginBottom: 10 }}>↺ Reset dữ liệu mẫu</button>
+          )}
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", paddingTop: 10, borderTop: "1px solid rgba(255,255,255,.1)" }}>
+            <div style={{ overflow: "hidden" }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: "#fff", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{profile?.email}</div>
+              <div style={{ fontSize: 10.5, color: isAdmin ? "#F5A623" : "rgba(255,255,255,.5)" }}>{isAdmin ? "Admin" : "Cán bộ"}</div>
+            </div>
+            <button onClick={onSignOut} title="Đăng xuất" style={{ background: "rgba(255,255,255,.08)", border: "none", borderRadius: 8, padding: 7, cursor: "pointer", display: "flex", flexShrink: 0 }}>
+              <LogOut size={14} color="rgba(255,255,255,.7)" />
             </button>
           </div>
-          <button onClick={resetToSample} style={{ width: "100%", background: "none", border: "none", cursor: "pointer", color: "rgba(255,255,255,.25)", fontSize: 11, textAlign: "left", padding: "4px 0" }}>↺ Reset dữ liệu mẫu</button>
         </div>
       </div>
       {/* ── Toast ── */}
@@ -1146,9 +1343,9 @@ export default function FosterApp() {
         </div>
         <div style={{ flex: 1, overflowY: "auto", padding: 22 }}>
           {tab === "dashboard" && <Dashboard data={data} />}
-          {tab === "classes" && <ClassesView data={data} api={api} />}
-          {tab === "students" && <StudentsView data={data} api={api} />}
-          {tab === "teachers" && <TeachersView data={data} api={api} />}
+          {tab === "classes" && <ClassesView data={data} api={api} isAdmin={isAdmin} />}
+          {tab === "students" && <StudentsView data={data} api={api} isAdmin={isAdmin} />}
+          {tab === "teachers" && <TeachersView data={data} api={api} isAdmin={isAdmin} />}
           {tab === "attendance" && <AttendanceView data={data} api={api} />}
           {tab === "payments" && <PaymentsView data={data} api={api} />}
           {tab === "reports" && <ReportsView data={data} />}
@@ -1156,4 +1353,39 @@ export default function FosterApp() {
       </div>
     </div>
   );
+}
+
+// ═══════════════════════════════ AUTH GATE ═══════════════════════════════
+export default function FosterApp() {
+  const [status, setStatus] = useState("checking"); // checking | out | in
+  const [profile, setProfile] = useState(null);
+
+  const loadProfile = async () => {
+    try { setProfile(await getMyProfile()); setStatus("in"); }
+    catch { setProfile(null); setStatus("in"); } // logged in but no profile row yet — treat as staff (no admin rights) below
+  };
+
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      const session = await getSession();
+      if (!mounted) return;
+      if (session) await loadProfile(); else setStatus("out");
+    })();
+    const { data: sub } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === "SIGNED_IN" && session) loadProfile();
+      if (event === "SIGNED_OUT") { setProfile(null); setStatus("out"); }
+    });
+    return () => { mounted = false; sub.subscription.unsubscribe(); };
+  }, []);
+
+  if (status === "checking") return (
+    <div style={{ height: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: C.bg }}>
+      <img src={leafIcon} alt="Foster" style={{ width: 48, height: 48, objectFit: "contain" }} />
+    </div>
+  );
+
+  if (status === "out") return <LoginScreen onLoggedIn={() => {}} />;
+
+  return <AuthenticatedApp profile={profile || { role: "staff" }} onSignOut={signOut} />;
 }

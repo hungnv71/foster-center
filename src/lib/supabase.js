@@ -10,6 +10,25 @@ const SUPABASE_ANON_KEY =
 
 export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
+// ═══════════════════ auth ═══════════════════
+export async function signIn(email, password) {
+  const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+  if (error) throw error;
+  return data;
+}
+export async function signOut() {
+  await supabase.auth.signOut();
+}
+export async function getSession() {
+  const { data } = await supabase.auth.getSession();
+  return data.session;
+}
+export async function getMyProfile() {
+  const { data, error } = await supabase.from("profiles").select("*").single();
+  if (error) throw error;
+  return data; // { id, email, role, name }
+}
+
 // ═══════════════════ row (snake_case) <-> app object (camelCase) ═══════════════════
 export const rowToTeacher = (r) => ({
   id: r.id, name: r.name, phone: r.phone, subject: r.subject, email: r.email, joinDate: r.join_date,
@@ -19,14 +38,14 @@ export const teacherToRow = (t) => ({
 });
 
 export const rowToClass = (r) => ({
-  id: r.id, name: r.name, subject: r.subject, teacherId: r.teacher_id, days: r.days || [],
-  startTime: r.start_time, endTime: r.end_time, room: r.room, maxStudents: r.max_students,
-  monthlyFee: Number(r.monthly_fee) || 0, status: r.status,
+  id: r.id, name: r.name, subject: r.subject, teacherId: r.teacher_id,
+  schedule: r.schedule || [], maxStudents: r.max_students,
+  feePerSession: Number(r.fee_per_session) || 0, status: r.status,
 });
 export const classToRow = (c) => ({
-  id: c.id, name: c.name, subject: c.subject, teacher_id: c.teacherId || null, days: c.days,
-  start_time: c.startTime, end_time: c.endTime, room: c.room, max_students: c.maxStudents,
-  monthly_fee: c.monthlyFee, status: c.status,
+  id: c.id, name: c.name, subject: c.subject, teacher_id: c.teacherId || null,
+  schedule: c.schedule || [], max_students: c.maxStudents,
+  fee_per_session: c.feePerSession, status: c.status,
 });
 
 export const rowToStudent = (r) => ({
