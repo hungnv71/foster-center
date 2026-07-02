@@ -23,6 +23,9 @@ const dayCodeOf = (dateStr) => { const [y, m, d] = dateStr.split("-").map(Number
 const ATT_STATUS = { present: { label: "Có mặt", color: "#10B981" }, absent: { label: "Vắng", color: "#EF4444" }, late: { label: "Muộn", color: "#F5A623" }, excused: { label: "Có phép", color: "#8B5CF6" } };
 const ROOMS = ["P.102", "P.103", "P.104", "P.202", "P.203", "P.204"];
 const MAX_SESSIONS_PER_WEEK = 3;
+// Đăng nhập đang TẠM TẮT — chưa có tài khoản Supabase Auth nào được tạo.
+// Bật lại bằng cách đổi thành true SAU KHI đã tạo 2 tài khoản + khóa RLS (xem hướng dẫn trước đó).
+const AUTH_ENABLED = false;
 
 // Đếm số buổi học của 1 lớp rơi vào 1 tháng/năm cụ thể, dựa trên các thứ trong schedule
 function sessionsInMonth(schedule, month, year) {
@@ -1309,15 +1312,17 @@ function AuthenticatedApp({ profile, onSignOut }) {
           {isAdmin && (
             <button onClick={resetToSample} style={{ width: "100%", background: "none", border: "none", cursor: "pointer", color: "rgba(255,255,255,.25)", fontSize: 11, textAlign: "left", padding: "4px 0", marginBottom: 10 }}>↺ Reset dữ liệu mẫu</button>
           )}
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", paddingTop: 10, borderTop: "1px solid rgba(255,255,255,.1)" }}>
-            <div style={{ overflow: "hidden" }}>
-              <div style={{ fontSize: 12, fontWeight: 700, color: "#fff", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{profile?.email}</div>
-              <div style={{ fontSize: 10.5, color: isAdmin ? "#F5A623" : "rgba(255,255,255,.5)" }}>{isAdmin ? "Admin" : "Cán bộ"}</div>
+          {AUTH_ENABLED && (
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", paddingTop: 10, borderTop: "1px solid rgba(255,255,255,.1)" }}>
+              <div style={{ overflow: "hidden" }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: "#fff", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{profile?.email}</div>
+                <div style={{ fontSize: 10.5, color: isAdmin ? "#F5A623" : "rgba(255,255,255,.5)" }}>{isAdmin ? "Admin" : "Cán bộ"}</div>
+              </div>
+              <button onClick={onSignOut} title="Đăng xuất" style={{ background: "rgba(255,255,255,.08)", border: "none", borderRadius: 8, padding: 7, cursor: "pointer", display: "flex", flexShrink: 0 }}>
+                <LogOut size={14} color="rgba(255,255,255,.7)" />
+              </button>
             </div>
-            <button onClick={onSignOut} title="Đăng xuất" style={{ background: "rgba(255,255,255,.08)", border: "none", borderRadius: 8, padding: 7, cursor: "pointer", display: "flex", flexShrink: 0 }}>
-              <LogOut size={14} color="rgba(255,255,255,.7)" />
-            </button>
-          </div>
+          )}
         </div>
       </div>
       {/* ── Toast ── */}
@@ -1357,8 +1362,8 @@ function AuthenticatedApp({ profile, onSignOut }) {
 
 // ═══════════════════════════════ AUTH GATE ═══════════════════════════════
 export default function FosterApp() {
-  const [status, setStatus] = useState("checking"); // checking | out | in
-  const [profile, setProfile] = useState(null);
+  const [status, setStatus] = useState(AUTH_ENABLED ? "checking" : "in");
+  const [profile, setProfile] = useState(AUTH_ENABLED ? null : { role: "admin" });
 
   const loadProfile = async () => {
     try { setProfile(await getMyProfile()); setStatus("in"); }
@@ -1366,6 +1371,7 @@ export default function FosterApp() {
   };
 
   useEffect(() => {
+    if (!AUTH_ENABLED) return;
     let mounted = true;
     (async () => {
       const session = await getSession();
