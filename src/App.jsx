@@ -338,12 +338,75 @@ function Dashboard({ data }) {
 }
 
 // ═══════════════════════════════ CLASSES VIEW ═══════════════════════════════
+// ═══════════════════════════════ ROOM SCHEDULE GRID ═══════════════════════════════
+const GRID_START_MIN = 7 * 60;   // 07:00
+const GRID_END_MIN = 21.5 * 60;  // 21:30
+const toMinutes = (t) => { const [h, m] = t.split(":").map(Number); return h * 60 + m; };
+
+function RoomScheduleGrid({ data }) {
+  const [day, setDay] = useState(dayCodeOf(todayStr()));
+  const totalMin = GRID_END_MIN - GRID_START_MIN;
+  const hourMarks = Array.from({ length: 15 }, (_, i) => 7 + i); // 7..21
+
+  const activeClasses = data.classes.filter((c) => c.status === "active");
+  const slotsFor = (room) => activeClasses.flatMap((cls) => (cls.schedule || []).filter((s) => s.day === day && s.room === room).map((s) => ({ ...s, cls })));
+  const bookedRoomsCount = ROOMS.filter((r) => slotsFor(r).length > 0).length;
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 10 }}>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {DAYS.map((d) => (
+            <button key={d} onClick={() => setDay(d)} style={{ padding: "6px 14px", borderRadius: 8, border: `2px solid ${day === d ? C.blue : C.border}`, background: day === d ? C.blue + "18" : "#fff", color: day === d ? C.blue : C.muted, fontWeight: 600, cursor: "pointer", fontSize: 13 }}>{d}</button>
+          ))}
+        </div>
+        <div style={{ fontSize: 13, color: C.muted }}>{bookedRoomsCount}/{ROOMS.length} phòng có lớp vào {day}</div>
+      </div>
+      <div style={{ overflowX: "auto" }}>
+        <div style={{ minWidth: 920 }}>
+          <div style={{ display: "flex", marginLeft: 92, marginBottom: 4 }}>
+            {hourMarks.map((h) => (
+              <div key={h} style={{ flex: 1, fontSize: 11, color: C.muted }}>{h}:00</div>
+            ))}
+          </div>
+          {ROOMS.map((room) => {
+            const slots = slotsFor(room);
+            return (
+              <div key={room} style={{ display: "flex", alignItems: "center", marginBottom: 8 }}>
+                <div style={{ width: 92, flexShrink: 0, fontWeight: 700, fontSize: 13, color: C.navy }}>{room}</div>
+                <div style={{ position: "relative", flex: 1, height: 46, background: C.bg, borderRadius: 8 }}>
+                  {hourMarks.map((h, i) => (
+                    <div key={h} style={{ position: "absolute", left: `${(i / hourMarks.length) * 100}%`, top: 0, bottom: 0, borderLeft: `1px solid ${C.border}` }} />
+                  ))}
+                  {slots.map((s, i) => {
+                    const left = Math.max(0, ((toMinutes(s.startTime) - GRID_START_MIN) / totalMin) * 100);
+                    const width = Math.min(100 - left, ((toMinutes(s.endTime) - toMinutes(s.startTime)) / totalMin) * 100);
+                    const t = data.teachers.find((x) => x.id === s.cls.teacherId);
+                    return (
+                      <div key={i} title={`${s.cls.name} · ${s.startTime}–${s.endTime} · GV: ${t?.name || "chưa phân công"}`}
+                        style={{ position: "absolute", left: `${left}%`, width: `${width}%`, top: 4, bottom: 4, background: C.blue, borderRadius: 6, color: "#fff", fontSize: 11.5, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 6px", overflow: "hidden", whiteSpace: "nowrap", cursor: "default" }}>
+                        {s.cls.name}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+      <div style={{ marginTop: 14, fontSize: 12, color: C.muted }}>💡 Di chuột vào ô màu xanh để xem chi tiết giờ học và giáo viên. Khoảng trắng trên mỗi dòng là thời gian phòng còn trống.</div>
+    </div>
+  );
+}
+
 function ClassesView({ data, api, isAdmin }) {
   const [search, setSearch] = useState("");
   const [subjectFilter, setSubjectFilter] = useState("");
   const [modal, setModal] = useState(null);
   const [confirmDel, setConfirmDel] = useState(null);
   const [viewStu, setViewStu] = useState(null);
+  const [viewMode, setViewMode] = useState("list"); // list | grid
   const blank = { name: "", subject: "Toán", teacherId: "", schedule: [], maxStudents: 20, feePerSession: 125000, status: "active" };
   const usedSubjects = [...new Set(data.classes.map((c) => c.subject))];
   const filtered = data.classes
@@ -358,46 +421,56 @@ function ClassesView({ data, api, isAdmin }) {
 
   return (
     <div>
-      <Card title={`Danh sách lớp học (${filtered.length})`} action={
+      <Card title={viewMode === "list" ? `Danh sách lớp học (${filtered.length})` : "🗓 Lịch phòng học"} action={
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-          <div style={{ position: "relative" }}><Search size={15} style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: C.muted }} />
-            <input placeholder="Tìm lớp..." value={search} onChange={(e) => setSearch(e.target.value)} style={{ padding: "8px 12px 8px 32px", borderRadius: 8, border: `1.5px solid ${C.border}`, fontSize: 14, width: 180, outline: "none" }} /></div>
-          <select value={subjectFilter} onChange={(e) => setSubjectFilter(e.target.value)} style={{ padding: "8px 12px", borderRadius: 8, border: `1.5px solid ${C.border}`, fontSize: 14, outline: "none" }}>
-            <option value="">Tất cả môn</option>
-            {usedSubjects.map((s) => <option key={s} value={s}>{s}</option>)}
-          </select>
+          <div style={{ display: "flex", background: C.bg, borderRadius: 8, padding: 3 }}>
+            <button onClick={() => setViewMode("list")} style={{ padding: "6px 12px", borderRadius: 6, border: "none", background: viewMode === "list" ? "#fff" : "transparent", boxShadow: viewMode === "list" ? "0 1px 3px rgba(0,0,0,.1)" : "none", color: viewMode === "list" ? C.navy : C.muted, fontWeight: 600, fontSize: 13, cursor: "pointer" }}>📋 Danh sách</button>
+            <button onClick={() => setViewMode("grid")} style={{ padding: "6px 12px", borderRadius: 6, border: "none", background: viewMode === "grid" ? "#fff" : "transparent", boxShadow: viewMode === "grid" ? "0 1px 3px rgba(0,0,0,.1)" : "none", color: viewMode === "grid" ? C.navy : C.muted, fontWeight: 600, fontSize: 13, cursor: "pointer" }}>🗓 Lịch phòng</button>
+          </div>
+          {viewMode === "list" && <>
+            <div style={{ position: "relative" }}><Search size={15} style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: C.muted }} />
+              <input placeholder="Tìm lớp..." value={search} onChange={(e) => setSearch(e.target.value)} style={{ padding: "8px 12px 8px 32px", borderRadius: 8, border: `1.5px solid ${C.border}`, fontSize: 14, width: 180, outline: "none" }} /></div>
+            <select value={subjectFilter} onChange={(e) => setSubjectFilter(e.target.value)} style={{ padding: "8px 12px", borderRadius: 8, border: `1.5px solid ${C.border}`, fontSize: 14, outline: "none" }}>
+              <option value="">Tất cả môn</option>
+              {usedSubjects.map((s) => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </>}
           <Btn color={C.blue} onClick={() => setModal({ cls: { ...blank } })}><Plus size={15} />Thêm lớp</Btn>
         </div>
       }>
-        <div style={{ overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
-            <thead><tr style={{ background: C.bg }}>
-              {["Tên lớp", "Môn", "Giáo viên", "Lịch học", "Học phí/buổi", "Sĩ số", ""].map((h, i) => <Th key={i}>{h}</Th>)}
-            </tr></thead>
-            <tbody>
-              {filtered.map((cls) => {
-                const t = data.teachers.find((x) => x.id === cls.teacherId);
-                const enrolled = data.registrations.filter((r) => r.classId === cls.id && r.status === "active").length;
-                return (
-                  <tr key={cls.id} style={{ borderBottom: `1px solid ${C.border}` }} onMouseEnter={(e) => (e.currentTarget.style.background = "#f8fafc")} onMouseLeave={(e) => (e.currentTarget.style.background = "")}>
-                    <Td style={{ fontWeight: 700, color: C.text }}>{cls.name}</Td>
-                    <Td><Badge color={C.blue}>{cls.subject}</Badge></Td>
-                    <Td style={{ color: C.text }}>{t?.name || <span style={{ color: C.red, fontSize: 12 }}>Chưa có GV</span>}</Td>
-                    <Td style={{ color: C.muted, fontSize: 12 }}>{scheduleSummary(cls.schedule)}</Td>
-                    <Td style={{ color: C.amber, fontWeight: 700 }}>{fmtMoney(cls.feePerSession)}</Td>
-                    <Td style={{ color: enrolled >= cls.maxStudents ? C.red : C.text, fontWeight: 600 }}>{enrolled}/{cls.maxStudents}</Td>
-                    <Td><div style={{ display: "flex", gap: 5 }}>
-                      <ActionBtn icon={Users} color={C.blue} onClick={() => setViewStu(cls.id)} title="Xem học sinh" />
-                      <ActionBtn icon={Edit2} color={C.amber} onClick={() => setModal({ cls: { ...cls } })} title="Sửa" />
-                      {isAdmin && <ActionBtn icon={Trash2} color={C.red} onClick={() => setConfirmDel(cls.id)} title="Xóa" />}
-                    </div></Td>
-                  </tr>
-                );
-              })}
-              {!filtered.length && <tr><td colSpan={7} style={{ padding: "32px", textAlign: "center", color: C.muted }}>Không tìm thấy lớp học</td></tr>}
-            </tbody>
-          </table>
-        </div>
+        {viewMode === "list" ? (
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
+              <thead><tr style={{ background: C.bg }}>
+                {["Tên lớp", "Môn", "Giáo viên", "Lịch học", "Học phí/buổi", "Sĩ số", ""].map((h, i) => <Th key={i}>{h}</Th>)}
+              </tr></thead>
+              <tbody>
+                {filtered.map((cls) => {
+                  const t = data.teachers.find((x) => x.id === cls.teacherId);
+                  const enrolled = data.registrations.filter((r) => r.classId === cls.id && r.status === "active").length;
+                  return (
+                    <tr key={cls.id} style={{ borderBottom: `1px solid ${C.border}` }} onMouseEnter={(e) => (e.currentTarget.style.background = "#f8fafc")} onMouseLeave={(e) => (e.currentTarget.style.background = "")}>
+                      <Td style={{ fontWeight: 700, color: C.text }}>{cls.name}</Td>
+                      <Td><Badge color={C.blue}>{cls.subject}</Badge></Td>
+                      <Td style={{ color: C.text }}>{t?.name || <span style={{ color: C.red, fontSize: 12 }}>Chưa có GV</span>}</Td>
+                      <Td style={{ color: C.muted, fontSize: 12 }}>{scheduleSummary(cls.schedule)}</Td>
+                      <Td style={{ color: C.amber, fontWeight: 700 }}>{fmtMoney(cls.feePerSession)}</Td>
+                      <Td style={{ color: enrolled >= cls.maxStudents ? C.red : C.text, fontWeight: 600 }}>{enrolled}/{cls.maxStudents}</Td>
+                      <Td><div style={{ display: "flex", gap: 5 }}>
+                        <ActionBtn icon={Users} color={C.blue} onClick={() => setViewStu(cls.id)} title="Xem học sinh" />
+                        <ActionBtn icon={Edit2} color={C.amber} onClick={() => setModal({ cls: { ...cls } })} title="Sửa" />
+                        {isAdmin && <ActionBtn icon={Trash2} color={C.red} onClick={() => setConfirmDel(cls.id)} title="Xóa" />}
+                      </div></Td>
+                    </tr>
+                  );
+                })}
+                {!filtered.length && <tr><td colSpan={7} style={{ padding: "32px", textAlign: "center", color: C.muted }}>Không tìm thấy lớp học</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <RoomScheduleGrid data={data} />
+        )}
       </Card>
       <Modal open={!!modal} onClose={() => setModal(null)} title={modal?.cls.id ? "Chỉnh sửa lớp học" : "Thêm lớp học"}>
         {modal && <ClassForm cls={modal.cls} teachers={data.teachers} allClasses={data.classes} onSave={handleSave} onCancel={() => setModal(null)} />}
