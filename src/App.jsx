@@ -3,7 +3,7 @@ import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContaine
 import { Home, BookOpen, Users, User, DollarSign, BarChart2, Plus, Edit2, Trash2, Search, X, CheckCircle, GraduationCap, AlertCircle, RefreshCw, Download, Upload, FileSpreadsheet, Wifi, WifiOff, FileUp, ClipboardCheck } from "lucide-react";
 import { supabase, fetchAll, insertRow, insertRows, updateRow, deleteRow, deleteAll, upsertRows, MAPPERS, signIn, signOut, getSession, getMyProfile } from "./lib/supabase.js";
 import { LogOut, Lock, Wallet, History } from "lucide-react";
-import { exportFullWorkbook, exportMonthlyPaymentReport, exportSummaryReport } from "./lib/excelExport.js";
+import { exportFullWorkbook, exportMonthlyPaymentReport, exportSummaryReport, exportTeachersTab, exportClassesTab, exportStudentsTab, exportAttendanceTab, exportPayrollTab, exportActivityLogTab, exportDashboardTab, exportDebtSummaryTab, exportMonthlyPayrollReport } from "./lib/excelExport.js";
 import { parseStudentsExcel, parseTeachersExcel, downloadStudentTemplate, downloadTeacherTemplate } from "./lib/excelImport.js";
 import leafIcon from "./assets/leaf-icon.png";
 
@@ -320,7 +320,11 @@ function Dashboard({ data }) {
           </div>
         </Card>
       )}
-      <Card title={`🗓 Thời khóa biểu hôm nay — ${todayCode}, ${new Date().toLocaleDateString("vi-VN")}`}>
+      <Card title={`🗓 Thời khóa biểu hôm nay — ${todayCode}, ${new Date().toLocaleDateString("vi-VN")}`} action={
+        <Btn color={C.green} style={{ padding: "6px 12px", fontSize: 13 }} onClick={() => exportDashboardTab(data, todaySessions.map(({ cls, slot }) => ({ cls, slot, teacherName: data.teachers.find((t) => t.id === cls.teacherId)?.name || "", enrolled: data.registrations.filter((r) => r.classId === cls.id && r.status === "active").length })))}>
+          <FileSpreadsheet size={13} />Xuất Excel
+        </Btn>
+      }>
         {todaySessions.length === 0
           ? <div style={{ textAlign: "center", padding: "20px 0", color: C.muted, fontSize: 13 }}>Hôm nay không có lớp nào theo lịch cố định.</div>
           : <div style={{ overflowX: "auto" }}>
@@ -511,6 +515,7 @@ function ClassesView({ data, api, isAdmin }) {
             </select>
           </>}
           <Btn color={C.blue} onClick={() => setModal({ cls: { ...blank } })}><Plus size={15} />Thêm lớp</Btn>
+          <Btn color={C.green} onClick={() => exportClassesTab(data)}><FileSpreadsheet size={15} />Xuất Excel</Btn>
         </div>
       }>
         {viewMode === "list" ? (
@@ -770,6 +775,7 @@ function StudentsView({ data, api, isAdmin }) {
             {GRADES.map((g) => <option key={g} value={g}>Lớp {g}</option>)}
           </select>
           <Btn color={C.green} onClick={() => setModal({ student: { ...blank } })}><Plus size={15} />Thêm học sinh</Btn>
+          <Btn color={C.green} outlined onClick={() => exportStudentsTab(data)}><FileSpreadsheet size={15} />Xuất Excel</Btn>
           <Btn color={C.blue} outlined onClick={startImport}><FileUp size={15} />Nhập Excel</Btn>
         </div>
       }>
@@ -910,6 +916,7 @@ function TeachersView({ data, api, isAdmin }) {
           <div style={{ position: "relative" }}><Search size={15} style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: C.muted }} />
             <input placeholder="Tìm giáo viên..." value={search} onChange={(e) => setSearch(e.target.value)} style={{ padding: "8px 12px 8px 32px", borderRadius: 8, border: `1.5px solid ${C.border}`, fontSize: 14, width: 200, outline: "none" }} /></div>
           <Btn color={C.purple} onClick={() => setModal({ teacher: { ...blank } })}><Plus size={15} />Thêm GV</Btn>
+          <Btn color={C.green} outlined onClick={() => exportTeachersTab(data)}><FileSpreadsheet size={15} />Xuất Excel</Btn>
           <Btn color={C.blue} outlined onClick={startImport}><FileUp size={15} />Nhập Excel</Btn>
         </div>
       }>
@@ -1013,8 +1020,11 @@ function AttendanceView({ data, api }) {
     const m = {};
     roster.forEach((s) => { const ex = existing[s.id]; m[s.id] = { status: ex?.status || "present", note: ex?.note || "" }; });
     setStatusMap(m);
+    // Chỉ nạp lại khi đổi LỚP hoặc NGÀY — không nạp lại mỗi khi data.attendance đổi,
+    // vì realtime đồng bộ có thể trả về ngay sau khi Lưu và ghi đè các lựa chọn đang
+    // sửa dở trên màn hình (bug đã gặp: mọi học sinh bị trả về "Có mặt" sau khi Lưu).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [classId, date, data.attendance.length]);
+  }, [classId, date]);
 
   const setStatus = (sid, status) => setStatusMap((m) => ({ ...m, [sid]: { ...m[sid], status } }));
   const setNote = (sid, note) => setStatusMap((m) => ({ ...m, [sid]: { ...m[sid], note } }));
@@ -1049,6 +1059,7 @@ function AttendanceView({ data, api }) {
             <input type="checkbox" checked={showAllClasses} onChange={(e) => setShowAllClasses(e.target.checked)} />
             Hiện tất cả lớp
           </label>
+          <Btn color={C.green} style={{ padding: "7px 12px", fontSize: 13 }} onClick={() => exportAttendanceTab(data)}><FileSpreadsheet size={13} />Xuất Excel</Btn>
         </div>
       }>
         {!relevantClasses.length && !showAllClasses && (
@@ -1190,6 +1201,9 @@ function PaymentsView({ data, api }) {
             <Btn color={C.blue} onClick={generate}><RefreshCw size={14} />Tạo bản ghi</Btn>
             <Btn color={C.green} onClick={() => exportMonthlyPaymentReport(rows, month, year)}><FileSpreadsheet size={14} />Xuất Excel</Btn>
           </>}
+          {viewMode === "debt" && (
+            <Btn color={C.green} onClick={() => exportDebtSummaryTab(debtList)}><FileSpreadsheet size={14} />Xuất Excel</Btn>
+          )}
         </div>
       }>
         {viewMode === "monthly" ? (
@@ -1300,6 +1314,7 @@ function PayrollView({ data, api }) {
             {[year - 1, year, year + 1].map((y) => <option key={y} value={y}>{y}</option>)}
           </select>
           <Btn color={C.blue} onClick={generate}><RefreshCw size={14} />Tạo bảng lương</Btn>
+          <Btn color={C.green} onClick={() => exportMonthlyPayrollReport(rows, month, year)}><FileSpreadsheet size={14} />Xuất Excel</Btn>
         </div>
       }>
         <div style={{ marginBottom: 14, padding: 10, background: C.blue + "10", borderRadius: 8, fontSize: 12.5, color: C.navy }}>
@@ -1355,10 +1370,13 @@ function ActivityLogView({ data }) {
   return (
     <div>
       <Card title={`📜 Nhật ký hoạt động (${filtered.length})`} action={
-        <select value={entityFilter} onChange={(e) => setEntityFilter(e.target.value)} style={{ padding: "7px 12px", borderRadius: 8, border: `1.5px solid ${C.border}`, fontSize: 14, outline: "none" }}>
-          <option value="">Tất cả loại</option>
-          {usedEntities.map((e) => <option key={e} value={e}>{LOG_ENTITY_LABEL[e] || e}</option>)}
-        </select>
+        <div style={{ display: "flex", gap: 8 }}>
+          <select value={entityFilter} onChange={(e) => setEntityFilter(e.target.value)} style={{ padding: "7px 12px", borderRadius: 8, border: `1.5px solid ${C.border}`, fontSize: 14, outline: "none" }}>
+            <option value="">Tất cả loại</option>
+            {usedEntities.map((e) => <option key={e} value={e}>{LOG_ENTITY_LABEL[e] || e}</option>)}
+          </select>
+          <Btn color={C.green} onClick={() => exportActivityLogTab(data)}><FileSpreadsheet size={14} />Xuất Excel</Btn>
+        </div>
       }>
         <div style={{ marginBottom: 14, padding: 10, background: C.amber + "12", borderRadius: 8, fontSize: 12.5, color: "#92650b" }}>
           ⚠ Hệ thống dùng chung 1 tài khoản đăng nhập nên nhật ký chỉ ghi lại <b>việc gì, lúc nào</b> — chưa xác định được chính xác ai thực hiện.
