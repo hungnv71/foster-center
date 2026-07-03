@@ -1170,6 +1170,18 @@ function PaymentsView({ data, api }) {
     if (!news.length) return alert("Đã có đầy đủ bản ghi cho tháng này!");
     await api.addPayments(news);
   };
+  const markAllPaid = async () => {
+    const unpaidRows = rows.filter((r) => !r.pay || r.pay.status === "unpaid");
+    if (!unpaidRows.length) return alert("Không có khoản nào đang \"Chưa thu\" trong danh sách hiện tại.");
+    const total = unpaidRows.reduce((s, r) => s + (r.pay?.amount ?? amountFor(r.cl)), 0);
+    if (!confirm(`Đánh dấu ĐÃ THU cho ${unpaidRows.length} học sinh (đang hiện trong bảng), tổng ${fmtMoney(total)}?\n\nChỉ áp dụng cho các dòng đang hiển thị theo bộ lọc hiện tại.`)) return;
+    const paidDate = todayStr();
+    const toUpsert = unpaidRows.map((r) => ({
+      id: r.pay?.id || genId(), studentId: r.s.id, classId: r.cl.id, month, year,
+      amount: r.pay?.amount ?? amountFor(r.cl), paidDate, status: "paid",
+    }));
+    await api.addPayments(toUpsert);
+  };
 
   return (
     <div>
@@ -1199,6 +1211,7 @@ function PaymentsView({ data, api }) {
             <div style={{ position: "relative" }}><Search size={14} style={{ position: "absolute", left: 9, top: "50%", transform: "translateY(-50%)", color: C.muted }} />
               <input placeholder="Tìm..." value={search} onChange={(e) => setSearch(e.target.value)} style={{ padding: "7px 12px 7px 30px", borderRadius: 8, border: `1.5px solid ${C.border}`, fontSize: 14, width: 140, outline: "none" }} /></div>
             <Btn color={C.blue} onClick={generate}><RefreshCw size={14} />Tạo bản ghi</Btn>
+            <Btn color={C.green} onClick={markAllPaid}><CheckCircle size={14} />Đánh dấu đã thu tất cả</Btn>
             <Btn color={C.green} onClick={() => exportMonthlyPaymentReport(rows, month, year)}><FileSpreadsheet size={14} />Xuất Excel</Btn>
           </>}
           {viewMode === "debt" && (
@@ -1275,9 +1288,14 @@ function PayrollView({ data, api }) {
   const mRolls = data.payroll.filter((p) => p.month === month && p.year === year);
 
   const rows = data.teachers.map((t) => {
-    const sessions = sessionsTaughtByTeacher(t.id, data.classes, data.attendance, month, year);
+    const liveSessions = sessionsTaughtByTeacher(t.id, data.classes, data.attendance, month, year);
     const roll = mRolls.find((p) => p.teacherId === t.id);
-    return { t, sessions, roll, amount: roll?.amount ?? t.feePerSession * sessions };
+    // Nếu đã có bảng lương (roll) thì hiện đúng số đã CHỐT lúc tạo/trả lương — không tự đổi theo điểm danh mới sau đó.
+    // Nếu điểm danh có cập nhật thêm sau khi đã tạo, đánh dấu "lệch" để nhắc tạo lại (chỉ khi chưa trả).
+    const sessions = roll ? roll.sessionsTaught : liveSessions;
+    const amount = roll ? roll.amount : t.feePerSession * liveSessions;
+    const stale = roll && roll.status === "unpaid" && liveSessions !== roll.sessionsTaught;
+    return { t, sessions, liveSessions, roll, amount, stale };
   });
 
   const totalExpected = rows.reduce((s, r) => s + r.amount, 0);
@@ -1285,16 +1303,17 @@ function PayrollView({ data, api }) {
   const totalUnpaid = totalExpected - totalPaid;
 
   const generate = async () => {
-    const ex = new Set(mRolls.map((p) => p.teacherId));
-    const news = rows.filter((r) => !ex.has(r.t.id) && r.sessions > 0)
-      .map((r) => ({ id: genId(), teacherId: r.t.id, month, year, sessionsTaught: r.sessions, amount: r.amount, paidDate: null, status: "unpaid" }));
-    if (!news.length) return alert("Không có giáo viên nào có buổi dạy mới cần tạo bảng lương (hoặc đã tạo đủ rồi).");
-    await api.addPayrolls(news);
+    // Tạo mới cho GV chưa có bảng lương tháng này; CẬP NHẬT lại cho bảng lương CHƯA TRẢ nếu số buổi điểm danh đã thay đổi.
+    // Không bao giờ đụng vào bảng đã "Đã trả" (giữ nguyên lịch sử).
+    const toUpsert = rows.filter((r) => r.liveSessions > 0 && (!r.roll || (r.roll.status === "unpaid" && r.stale)))
+      .map((r) => ({ id: r.roll?.id || genId(), teacherId: r.t.id, month, year, sessionsTaught: r.liveSessions, amount: r.t.feePerSession * r.liveSessions, paidDate: null, status: "unpaid" }));
+    if (!toUpsert.length) return alert("Không có gì cần tạo/cập nhật — mọi bảng lương đã khớp với điểm danh mới nhất.");
+    await api.addPayrolls(toUpsert);
   };
   const markPaid = async (row) => {
     const label = `${row.t.name} (T${month}/${year})`;
     if (row.roll) await api.updatePayrollStatus(row.roll.id, "paid", todayStr(), label);
-    else await api.addPayrolls([{ id: genId(), teacherId: row.t.id, month, year, sessionsTaught: row.sessions, amount: row.amount, paidDate: todayStr(), status: "paid" }]);
+    else await api.addPayrolls([{ id: genId(), teacherId: row.t.id, month, year, sessionsTaught: row.liveSessions, amount: row.amount, paidDate: todayStr(), status: "paid" }]);
   };
   const markUnpaid = async (row) => { if (row.roll) await api.updatePayrollStatus(row.roll.id, "unpaid", null, `${row.t.name} (T${month}/${year})`); };
 
@@ -1318,7 +1337,7 @@ function PayrollView({ data, api }) {
         </div>
       }>
         <div style={{ marginBottom: 14, padding: 10, background: C.blue + "10", borderRadius: 8, fontSize: 12.5, color: C.navy }}>
-          💡 Số buổi tính theo <b>điểm danh thực tế</b> đã ghi nhận trong tháng — lớp nào chưa điểm danh sẽ chưa được tính vào lương.
+          💡 Số buổi tính theo <b>điểm danh thực tế</b> đã ghi nhận trong tháng. Sau khi tạo bảng lương, số liệu được <b>chốt lại</b> — nếu điểm danh thêm sau đó, bấm "Tạo bảng lương" lần nữa để cập nhật (chỉ áp dụng với bảng chưa trả; bảng đã trả luôn được giữ nguyên).
         </div>
         <div style={{ overflowX: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
@@ -1328,7 +1347,10 @@ function PayrollView({ data, api }) {
                 <tr key={row.t.id} style={{ borderBottom: `1px solid ${C.border}` }} onMouseEnter={(e) => (e.currentTarget.style.background = "#f8fafc")} onMouseLeave={(e) => (e.currentTarget.style.background = "")}>
                   <Td style={{ fontWeight: 700, color: C.text }}>{row.t.name}</Td>
                   <Td><Badge color={C.purple}>{row.t.subject}</Badge></Td>
-                  <Td style={{ color: C.muted }}>{row.sessions} buổi</Td>
+                  <Td style={{ color: C.muted }}>
+                    {row.sessions} buổi
+                    {row.stale && <span title={`Điểm danh mới nhất cho thấy ${row.liveSessions} buổi — bấm "Tạo bảng lương" để cập nhật`} style={{ marginLeft: 6, color: C.amber, fontSize: 11, fontWeight: 700 }}>⚠ lệch</span>}
+                  </Td>
                   <Td style={{ color: C.muted }}>{fmtMoney(row.t.feePerSession)}</Td>
                   <Td style={{ fontWeight: 700, color: C.amber }}>{fmtMoney(row.amount)}</Td>
                   <Td>
@@ -1553,8 +1575,8 @@ function AuthenticatedApp({ profile, onSignOut }) {
     addRegistrations: async (rs) => { try { await insertRows("registrations", rs); } catch { showToast("⚠ Lỗi khi đăng ký lớp hàng loạt", C.red); } },
     deleteRegistration: async (id) => { try { await deleteRow("registrations", id); } catch { showToast("⚠ Lỗi khi hủy đăng ký", C.red); } },
 
-    addPayment: async (p) => { try { await insertRow("payments", p); } catch { showToast("⚠ Lỗi khi ghi nhận học phí", C.red); } },
-    addPayments: async (ps) => { try { await insertRows("payments", ps); } catch { showToast("⚠ Lỗi khi tạo bản ghi học phí", C.red); } },
+    addPayment: async (p) => { try { await upsertRows("payments", [p], "student_id,class_id,month,year"); } catch { showToast("⚠ Lỗi khi ghi nhận học phí", C.red); } },
+    addPayments: async (ps) => { try { await upsertRows("payments", ps, "student_id,class_id,month,year"); } catch { showToast("⚠ Lỗi khi tạo bản ghi học phí", C.red); } },
     updatePaymentStatus: async (id, status, paid_date, label) => { try { await updateRow("payments", id, { status, paid_date }); if (label) log("update", "payment", `${status === "paid" ? "Thu học phí" : "Hoàn lại học phí"}: ${label}`); } catch { showToast("⚠ Lỗi khi cập nhật học phí", C.red); } },
 
     saveAttendance: async (rows) => {
@@ -1562,7 +1584,7 @@ function AuthenticatedApp({ profile, onSignOut }) {
       catch { showToast("⚠ Lỗi khi lưu điểm danh", C.red); }
     },
 
-    addPayrolls: async (ps) => { try { await insertRows("payroll", ps); } catch { showToast("⚠ Lỗi khi tạo bảng lương", C.red); } },
+    addPayrolls: async (ps) => { try { await upsertRows("payroll", ps, "teacher_id,month,year"); } catch { showToast("⚠ Lỗi khi tạo bảng lương", C.red); } },
     updatePayrollStatus: async (id, status, paid_date, label) => { try { await updateRow("payroll", id, { status, paid_date }); if (label) log("update", "payroll", `${status === "paid" ? "Trả lương" : "Hoàn lại lương"}: ${label}`); } catch { showToast("⚠ Lỗi khi cập nhật lương", C.red); } },
   };
 
