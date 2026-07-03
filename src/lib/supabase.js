@@ -32,9 +32,11 @@ export async function getMyProfile() {
 // ═══════════════════ row (snake_case) <-> app object (camelCase) ═══════════════════
 export const rowToTeacher = (r) => ({
   id: r.id, name: r.name, phone: r.phone, subject: r.subject, email: r.email, joinDate: r.join_date,
+  feePerSession: Number(r.fee_per_session) || 0,
 });
 export const teacherToRow = (t) => ({
   id: t.id, name: t.name, phone: t.phone, subject: t.subject, email: t.email, join_date: t.joinDate || null,
+  fee_per_session: t.feePerSession || 0,
 });
 
 export const rowToClass = (r) => ({
@@ -80,6 +82,18 @@ export const attendanceToRow = (a) => ({
   id: a.id, class_id: a.classId, student_id: a.studentId, date: a.date, status: a.status, note: a.note || null,
 });
 
+export const rowToPayroll = (r) => ({
+  id: r.id, teacherId: r.teacher_id, month: r.month, year: r.year,
+  sessionsTaught: r.sessions_taught, amount: Number(r.amount) || 0, paidDate: r.paid_date, status: r.status,
+});
+export const payrollToRow = (p) => ({
+  id: p.id, teacher_id: p.teacherId, month: p.month, year: p.year,
+  sessions_taught: p.sessionsTaught, amount: p.amount, paid_date: p.paidDate || null, status: p.status,
+});
+
+export const rowToLog = (r) => ({ id: r.id, action: r.action, entity: r.entity, summary: r.summary, createdAt: r.created_at });
+export const logToRow = (l) => ({ id: l.id, action: l.action, entity: l.entity, summary: l.summary });
+
 export const MAPPERS = {
   teachers: { toApp: rowToTeacher, toRow: teacherToRow },
   classes: { toApp: rowToClass, toRow: classToRow },
@@ -87,6 +101,8 @@ export const MAPPERS = {
   registrations: { toApp: rowToReg, toRow: regToRow },
   payments: { toApp: rowToPayment, toRow: paymentToRow },
   attendance: { toApp: rowToAttendance, toRow: attendanceToRow },
+  payroll: { toApp: rowToPayroll, toRow: payrollToRow },
+  activity_log: { toApp: rowToLog, toRow: logToRow },
 };
 
 // ═══════════════════ generic CRUD ═══════════════════

@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from "recharts";
 import { Home, BookOpen, Users, User, DollarSign, BarChart2, Plus, Edit2, Trash2, Search, X, CheckCircle, GraduationCap, AlertCircle, RefreshCw, Download, Upload, FileSpreadsheet, Wifi, WifiOff, FileUp, ClipboardCheck } from "lucide-react";
 import { supabase, fetchAll, insertRow, insertRows, updateRow, deleteRow, deleteAll, upsertRows, MAPPERS, signIn, signOut, getSession, getMyProfile } from "./lib/supabase.js";
-import { LogOut, Lock } from "lucide-react";
+import { LogOut, Lock, Wallet, History } from "lucide-react";
 import { exportFullWorkbook, exportMonthlyPaymentReport, exportSummaryReport } from "./lib/excelExport.js";
 import { parseStudentsExcel, parseTeachersExcel, downloadStudentTemplate, downloadTeacherTemplate } from "./lib/excelImport.js";
 import leafIcon from "./assets/leaf-icon.png";
@@ -17,7 +17,7 @@ const GRADES = ["6", "7", "8", "9", "10", "11", "12"];
 const DAYS = ["T2", "T3", "T4", "T5", "T6", "T7", "CN"];
 const C = { navy: "#1B3A6B", amber: "#F5A623", blue: "#3B82F6", green: "#10B981", red: "#EF4444", purple: "#8B5CF6", bg: "#EFF3F8", border: "#E2E8F0", text: "#1E293B", muted: "#64748B" };
 const PIE_COLORS = [C.blue, C.green, C.purple, C.amber, C.red, "#06B6D4", "#EC4899", "#84CC16"];
-const TABLE_ORDER = ["teachers", "classes", "students", "registrations", "payments", "attendance"];
+const TABLE_ORDER = ["teachers", "classes", "students", "registrations", "payments", "attendance", "payroll", "activity_log"];
 const DAY_CODE_BY_JSDAY = ["CN", "T2", "T3", "T4", "T5", "T6", "T7"];
 const dayCodeOf = (dateStr) => { const [y, m, d] = dateStr.split("-").map(Number); return DAY_CODE_BY_JSDAY[new Date(y, m - 1, d).getDay()]; };
 const ATT_STATUS = { present: { label: "Có mặt", color: "#10B981" }, absent: { label: "Vắng", color: "#EF4444" }, late: { label: "Muộn", color: "#F5A623" }, excused: { label: "Có phép", color: "#8B5CF6" } };
@@ -39,6 +39,18 @@ function sessionsInMonth(schedule, month, year) {
   return count;
 }
 const timesOverlap = (s1, e1, s2, e2) => s1 < e2 && s2 < e1;
+
+// Số buổi giáo viên ĐÃ THỰC SỰ dạy trong tháng — đếm theo bản ghi điểm danh thật (không phải lịch lý thuyết)
+function sessionsTaughtByTeacher(teacherId, classes, attendance, month, year) {
+  const myClassIds = new Set(classes.filter((c) => c.teacherId === teacherId).map((c) => c.id));
+  const sessions = new Set();
+  attendance.forEach((a) => {
+    if (!myClassIds.has(a.classId)) return;
+    const [y, m] = a.date.split("-").map(Number);
+    if (y === year && m === month) sessions.add(`${a.classId}|${a.date}`);
+  });
+  return sessions.size;
+}
 
 // Tìm xung đột (trùng phòng hoặc trùng giáo viên) giữa 1 lớp (đang tạo/sửa) và các lớp khác đang hoạt động
 function findScheduleConflicts(candidate, allClasses) {
@@ -65,10 +77,10 @@ const scheduleSummary = (schedule) => (schedule || []).map((s) => `${s.day} ${s.
 // ═══════════════════════════════ SAMPLE DATA (used only for "reset") ═══════════════════════════════
 const SAMPLE_DATA = {
   teachers: [
-    { id: "t1", name: "Nguyễn Thị Lan", phone: "0901234567", subject: "Toán", email: "lan@foster.vn", joinDate: "2023-09-01" },
-    { id: "t2", name: "Trần Văn Nam", phone: "0902345678", subject: "Ngữ Văn", email: "nam@foster.vn", joinDate: "2023-09-01" },
-    { id: "t3", name: "Lê Thị Hoa", phone: "0903456789", subject: "Tiếng Anh", email: "hoa@foster.vn", joinDate: "2024-01-10" },
-    { id: "t4", name: "Phạm Quốc Tuấn", phone: "0904567890", subject: "Vật Lý", email: "tuan@foster.vn", joinDate: "2024-01-10" },
+    { id: "t1", name: "Nguyễn Thị Lan", phone: "0901234567", subject: "Toán", email: "lan@foster.vn", joinDate: "2023-09-01", feePerSession: 90000 },
+    { id: "t2", name: "Trần Văn Nam", phone: "0902345678", subject: "Ngữ Văn", email: "nam@foster.vn", joinDate: "2023-09-01", feePerSession: 90000 },
+    { id: "t3", name: "Lê Thị Hoa", phone: "0903456789", subject: "Tiếng Anh", email: "hoa@foster.vn", joinDate: "2024-01-10", feePerSession: 100000 },
+    { id: "t4", name: "Phạm Quốc Tuấn", phone: "0904567890", subject: "Vật Lý", email: "tuan@foster.vn", joinDate: "2024-01-10", feePerSession: 90000 },
   ],
   classes: [
     { id: "c1", name: "Toán 10A", subject: "Toán", teacherId: "t1", schedule: [{ day: "T2", startTime: "17:30", endTime: "19:00", room: "P.102" }, { day: "T4", startTime: "17:30", endTime: "19:00", room: "P.102" }, { day: "T6", startTime: "17:30", endTime: "19:00", room: "P.102" }], maxStudents: 20, feePerSession: 125000, status: "active" },
@@ -113,6 +125,8 @@ const SAMPLE_DATA = {
     { id: "py16", studentId: "s5", classId: "c1", month: 6, year: 2026, amount: 500000, paidDate: null, status: "unpaid" },
   ],
   attendance: [],
+  payroll: [],
+  activity_log: [],
 };
 
 // ═══════════════════════════════ SHARED UI ═══════════════════════════════
@@ -211,6 +225,47 @@ function LoginScreen({ onLoggedIn }) {
   );
 }
 
+// Phát hiện học sinh có nguy cơ nghỉ học: vắng liên tiếp ≥3 buổi ở 1 lớp, hoặc chuyên cần <70% trong 30 ngày qua
+function computeDropoutRisk(data) {
+  const cutoff = new Date(); cutoff.setDate(cutoff.getDate() - 30);
+  const cutoffStr = cutoff.toISOString().slice(0, 10);
+  const byStudent = {};
+  const flag = (studentId, reason) => {
+    if (!byStudent[studentId]) byStudent[studentId] = { studentId, reasons: [] };
+    byStudent[studentId].reasons.push(reason);
+  };
+
+  const activeRegs = data.registrations.filter((r) => r.status === "active");
+
+  // 1) Vắng liên tiếp theo từng lớp
+  activeRegs.forEach((r) => {
+    const recs = data.attendance.filter((a) => a.studentId === r.studentId && a.classId === r.classId).sort((a, b) => (a.date < b.date ? 1 : -1));
+    let streak = 0;
+    for (const rec of recs) { if (rec.status === "absent") streak++; else break; }
+    if (streak >= 3) {
+      const cls = data.classes.find((c) => c.id === r.classId);
+      flag(r.studentId, `Vắng liên tiếp ${streak} buổi tại lớp ${cls?.name || ""}`);
+    }
+  });
+
+  // 2) Tỷ lệ chuyên cần thấp trong 30 ngày qua (tính chung mọi lớp)
+  const byStudentRecent = {};
+  data.attendance.filter((a) => a.date >= cutoffStr).forEach((a) => {
+    if (!byStudentRecent[a.studentId]) byStudentRecent[a.studentId] = [];
+    byStudentRecent[a.studentId].push(a);
+  });
+  Object.entries(byStudentRecent).forEach(([studentId, recs]) => {
+    if (recs.length < 3) return; // đủ dữ liệu mới đánh giá, tránh báo nhầm
+    const presentCount = recs.filter((a) => a.status === "present" || a.status === "late").length;
+    const rate = presentCount / recs.length;
+    if (rate < 0.7) flag(studentId, `Chuyên cần ${Math.round(rate * 100)}% trong 30 ngày qua`);
+  });
+
+  return Object.values(byStudent)
+    .map((x) => ({ ...x, student: data.students.find((s) => s.id === x.studentId) }))
+    .filter((x) => x.student);
+}
+
 function Dashboard({ data }) {
   const now = new Date();
   const [cm, cy] = [now.getMonth() + 1, now.getFullYear()];
@@ -239,6 +294,8 @@ function Dashboard({ data }) {
     return acc;
   }, {});
 
+  const riskList = computeDropoutRisk(data);
+
   return (
     <div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(190px,1fr))", gap: 14, marginBottom: 22 }}>
@@ -248,6 +305,21 @@ function Dashboard({ data }) {
         <StatCard icon={DollarSign} label={`Đã thu T${cm}/${cy}`} value={fmtMoney(paidRev)} color={C.amber}
           sub={unpaidPays.length ? `⚠ Còn ${unpaidPays.length} khoản chưa thu` : "✓ Thu đầy đủ rồi!"} />
       </div>
+      {riskList.length > 0 && (
+        <Card title="🚨 Học sinh có nguy cơ nghỉ học">
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {riskList.map((r) => (
+              <div key={r.studentId} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 14px", background: C.red + "0d", borderRadius: 10, flexWrap: "wrap", gap: 6 }}>
+                <div>
+                  <span style={{ fontWeight: 700, color: C.text, fontSize: 14 }}>{r.student.name}</span>
+                  <span style={{ color: C.muted, fontSize: 12, marginLeft: 8 }}>{r.student.parentPhone}</span>
+                </div>
+                <div style={{ fontSize: 12.5, color: C.red }}>{r.reasons.join(" · ")}</div>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
       <Card title={`🗓 Thời khóa biểu hôm nay — ${todayCode}, ${new Date().toLocaleDateString("vi-VN")}`}>
         {todaySessions.length === 0
           ? <div style={{ textAlign: "center", padding: "20px 0", color: C.muted, fontSize: 13 }}>Hôm nay không có lớp nào theo lịch cố định.</div>
@@ -420,7 +492,7 @@ function ClassesView({ data, api, isAdmin }) {
     setModal(null);
     if (cls.id) await api.updateClass(cls); else await api.addClass(cls);
   };
-  const handleDel = async (id) => { setConfirmDel(null); await api.deleteClass(id); };
+  const handleDel = async (id) => { setConfirmDel(null); await api.deleteClass(id, data.classes.find((c) => c.id === id)?.name); };
 
   return (
     <div>
@@ -659,7 +731,7 @@ function StudentsView({ data, api, isAdmin }) {
     .filter((s) => !gradeFilter || s.grade === gradeFilter);
   const countCls = (id) => data.registrations.filter((r) => r.studentId === id && r.status === "active").length;
   const handleSave = async (s) => { setModal(null); if (s.id) await api.updateStudent(s); else await api.addStudent(s); };
-  const handleDel = async (id) => { setConfirmDel(null); await api.deleteStudent(id); };
+  const handleDel = async (id) => { setConfirmDel(null); await api.deleteStudent(id, data.students.find((s) => s.id === id)?.name); };
   const startImport = () => pickExcelFile(async (file) => {
     try {
       const parsed = await parseStudentsExcel(file);
@@ -814,13 +886,13 @@ function TeachersView({ data, api, isAdmin }) {
   const [confirmDel, setConfirmDel] = useState(null);
   const [importPreview, setImportPreview] = useState(null);
   const [importing, setImporting] = useState(false);
-  const blank = { name: "", phone: "", subject: "Toán", email: "", joinDate: todayStr() };
+  const blank = { name: "", phone: "", subject: "Toán", email: "", joinDate: todayStr(), feePerSession: 90000 };
   const filtered = data.teachers.filter((t) => t.name.toLowerCase().includes(search.toLowerCase()) || t.subject.toLowerCase().includes(search.toLowerCase()));
   const getClasses = (id) => data.classes.filter((c) => c.teacherId === id && c.status === "active");
   const handleSave = async (t) => { setModal(null); if (t.id) await api.updateTeacher(t); else await api.addTeacher(t); };
   const handleDel = async (id) => {
     if (data.classes.some((c) => c.teacherId === id)) return alert("Giáo viên đang phụ trách lớp học.\nVui lòng chuyển lớp trước khi xóa.");
-    setConfirmDel(null); await api.deleteTeacher(id);
+    setConfirmDel(null); await api.deleteTeacher(id, data.teachers.find((t) => t.id === id)?.name);
   };
   const startImport = () => pickExcelFile(async (file) => {
     try { setImportPreview(await parseTeachersExcel(file)); }
@@ -857,7 +929,7 @@ function TeachersView({ data, api, isAdmin }) {
                   </div>
                 </div>
                 <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.8 }}>
-                  <div>📞 {t.phone}</div>{t.email && <div>✉️ {t.email}</div>}<div>📅 Từ {fmtDate(t.joinDate)}</div>
+                  <div>📞 {t.phone}</div>{t.email && <div>✉️ {t.email}</div>}<div>📅 Từ {fmtDate(t.joinDate)}</div><div>💵 {fmtMoney(t.feePerSession)}/buổi</div>
                 </div>
                 <div style={{ marginTop: 12, paddingTop: 10, borderTop: `1px solid ${C.border}` }}>
                   <div style={{ fontSize: 12, color: C.muted, marginBottom: 6 }}>Lớp phụ trách ({cls.length}):</div>
@@ -897,6 +969,7 @@ function TeacherForm({ teacher, onSave, onCancel }) {
         <Inp label="SĐT *" value={f.phone} onChange={(e) => set("phone", e.target.value)} placeholder="09xxxxxxxx" />
         <Inp label="Email" type="email" value={f.email} onChange={(e) => set("email", e.target.value)} placeholder="email@foster.vn" />
         <Inp label="Ngày bắt đầu" type="date" value={f.joinDate} onChange={(e) => set("joinDate", e.target.value)} />
+        <Inp label="Lương / buổi dạy (đ)" type="number" value={f.feePerSession} onChange={(e) => set("feePerSession", +e.target.value)} />
       </div>
       <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 4 }}>
         <Btn color={C.muted} outlined onClick={onCancel}>Hủy</Btn>
@@ -1040,6 +1113,7 @@ function PaymentsView({ data, api }) {
   const [year, setYear] = useState(now.getFullYear());
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState(""); // "" | paid | unpaid
+  const [viewMode, setViewMode] = useState("monthly"); // monthly | debt
   const activeRegs = data.registrations.filter((r) => r.status === "active");
   const mPays = data.payments.filter((p) => p.month === month && p.year === year);
   const amountFor = (cl) => cl.feePerSession * sessionsInMonth(cl.schedule, month, year);
@@ -1059,11 +1133,25 @@ function PaymentsView({ data, api }) {
   const totalUnpaid = rows.filter((r) => !r.pay || r.pay.status === "unpaid").reduce((sum, r) => sum + (r.pay?.amount ?? amountFor(r.cl)), 0);
   const unpaidCount = rows.filter((r) => !r.pay || r.pay.status === "unpaid").length;
 
+  // ── Công nợ tổng hợp: cộng dồn TẤT CẢ các khoản chưa thu, mọi tháng/năm ──
+  const debtByStudent = {};
+  data.payments.filter((p) => p.status === "unpaid").forEach((p) => {
+    const s = data.students.find((x) => x.id === p.studentId);
+    const cl = data.classes.find((x) => x.id === p.classId);
+    if (!s || !cl) return;
+    if (!debtByStudent[s.id]) debtByStudent[s.id] = { student: s, total: 0, items: [] };
+    debtByStudent[s.id].total += p.amount;
+    debtByStudent[s.id].items.push({ cl, month: p.month, year: p.year, amount: p.amount });
+  });
+  const debtList = Object.values(debtByStudent).sort((a, b) => b.total - a.total);
+  const grandTotalDebt = debtList.reduce((s, d) => s + d.total, 0);
+
   const markPaid = async (row) => {
-    if (row.pay) await api.updatePaymentStatus(row.pay.id, "paid", todayStr());
+    const label = `${row.s.name} - ${row.cl.name} (T${month}/${year})`;
+    if (row.pay) await api.updatePaymentStatus(row.pay.id, "paid", todayStr(), label);
     else await api.addPayment({ id: genId(), studentId: row.s.id, classId: row.cl.id, month, year, amount: amountFor(row.cl), paidDate: todayStr(), status: "paid" });
   };
-  const markUnpaid = async (row) => { if (row.pay) await api.updatePaymentStatus(row.pay.id, "unpaid", null); };
+  const markUnpaid = async (row) => { if (row.pay) await api.updatePaymentStatus(row.pay.id, "unpaid", null, `${row.s.name} - ${row.cl.name} (T${month}/${year})`); };
   const generate = async () => {
     const ex = new Set(mPays.map((p) => `${p.studentId}-${p.classId}`));
     const news = activeRegs.filter((r) => { const cl = data.classes.find((c) => c.id === r.classId); return cl && !ex.has(`${r.studentId}-${r.classId}`); })
@@ -1079,7 +1167,131 @@ function PaymentsView({ data, api }) {
         <StatCard icon={CheckCircle} label="Đã thu" value={fmtMoney(totalPaid)} color={C.green} />
         <StatCard icon={AlertCircle} label="Chưa thu" value={fmtMoney(totalUnpaid)} color={C.red} />
       </div>
-      <Card title="💰 Quản lý học phí" action={
+      <Card title={viewMode === "monthly" ? "💰 Quản lý học phí" : "📕 Công nợ tổng hợp — mọi tháng"} action={
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <div style={{ display: "flex", background: C.bg, borderRadius: 8, padding: 3 }}>
+            <button onClick={() => setViewMode("monthly")} style={{ padding: "6px 12px", borderRadius: 6, border: "none", background: viewMode === "monthly" ? "#fff" : "transparent", boxShadow: viewMode === "monthly" ? "0 1px 3px rgba(0,0,0,.1)" : "none", color: viewMode === "monthly" ? C.navy : C.muted, fontWeight: 600, fontSize: 13, cursor: "pointer" }}>Theo tháng</button>
+            <button onClick={() => setViewMode("debt")} style={{ padding: "6px 12px", borderRadius: 6, border: "none", background: viewMode === "debt" ? "#fff" : "transparent", boxShadow: viewMode === "debt" ? "0 1px 3px rgba(0,0,0,.1)" : "none", color: viewMode === "debt" ? C.navy : C.muted, fontWeight: 600, fontSize: 13, cursor: "pointer" }}>Công nợ tổng hợp</button>
+          </div>
+          {viewMode === "monthly" && <>
+            <select value={month} onChange={(e) => setMonth(+e.target.value)} style={{ padding: "7px 12px", borderRadius: 8, border: `1.5px solid ${C.border}`, fontSize: 14, outline: "none" }}>
+              {Array.from({ length: 12 }, (_, i) => <option key={i + 1} value={i + 1}>Tháng {i + 1}</option>)}
+            </select>
+            <select value={year} onChange={(e) => setYear(+e.target.value)} style={{ padding: "7px 12px", borderRadius: 8, border: `1.5px solid ${C.border}`, fontSize: 14, outline: "none" }}>
+              {[year - 1, year, year + 1].map((y) => <option key={y} value={y}>{y}</option>)}
+            </select>
+            <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} style={{ padding: "7px 12px", borderRadius: 8, border: `1.5px solid ${statusFilter === "unpaid" ? C.red : C.border}`, fontSize: 14, outline: "none", color: statusFilter === "unpaid" ? C.red : C.text }}>
+              <option value="">Tất cả trạng thái</option>
+              <option value="unpaid">⚠ Chưa thu ({unpaidCount})</option>
+              <option value="paid">✓ Đã thu</option>
+            </select>
+            <div style={{ position: "relative" }}><Search size={14} style={{ position: "absolute", left: 9, top: "50%", transform: "translateY(-50%)", color: C.muted }} />
+              <input placeholder="Tìm..." value={search} onChange={(e) => setSearch(e.target.value)} style={{ padding: "7px 12px 7px 30px", borderRadius: 8, border: `1.5px solid ${C.border}`, fontSize: 14, width: 140, outline: "none" }} /></div>
+            <Btn color={C.blue} onClick={generate}><RefreshCw size={14} />Tạo bản ghi</Btn>
+            <Btn color={C.green} onClick={() => exportMonthlyPaymentReport(rows, month, year)}><FileSpreadsheet size={14} />Xuất Excel</Btn>
+          </>}
+        </div>
+      }>
+        {viewMode === "monthly" ? (
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
+              <thead><tr style={{ background: C.bg }}>{["Học sinh", "Lớp", "Số buổi", "Học phí", "Trạng thái", "Ngày thu", "Thao tác"].map((h, i) => <Th key={i}>{h}</Th>)}</tr></thead>
+              <tbody>
+                {rows.map((row, i) => (
+                  <tr key={i} style={{ borderBottom: `1px solid ${C.border}` }} onMouseEnter={(e) => (e.currentTarget.style.background = "#f8fafc")} onMouseLeave={(e) => (e.currentTarget.style.background = "")}>
+                    <Td style={{ fontWeight: 700, color: C.text }}>{row.s.name}</Td>
+                    <Td><Badge color={C.blue}>{row.cl.name}</Badge></Td>
+                    <Td style={{ color: C.muted }}>{sessionsInMonth(row.cl.schedule, month, year)} buổi</Td>
+                    <Td style={{ fontWeight: 700, color: C.amber }}>{fmtMoney(row.pay?.amount ?? amountFor(row.cl))}</Td>
+                    <Td>
+                      {!row.pay ? <Badge color={C.muted}>Chưa tạo</Badge>
+                        : row.pay.status === "paid" ? <Badge color={C.green}>✓ Đã thu</Badge>
+                        : <Badge color={C.red}>⚠ Chưa thu</Badge>}
+                    </Td>
+                    <Td style={{ color: C.muted }}>{row.pay?.paidDate ? fmtDate(row.pay.paidDate) : "—"}</Td>
+                    <Td>
+                      {(!row.pay || row.pay.status === "unpaid")
+                        ? <Btn color={C.green} style={{ padding: "5px 12px", fontSize: 13 }} onClick={() => markPaid(row)}><CheckCircle size={13} />Thu tiền</Btn>
+                        : <Btn color={C.red} outlined style={{ padding: "5px 12px", fontSize: 13 }} onClick={() => markUnpaid(row)}>Hoàn lại</Btn>}
+                    </Td>
+                  </tr>
+                ))}
+                {!rows.length && <tr><td colSpan={7} style={{ padding: "32px", textAlign: "center", color: C.muted }}>Không có dữ liệu khớp bộ lọc</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div>
+            <div style={{ marginBottom: 16, padding: 14, background: C.red + "10", borderRadius: 10, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span style={{ fontSize: 14, color: C.text }}>Tổng công nợ toàn trung tâm (mọi tháng chưa thu)</span>
+              <span style={{ fontSize: 20, fontWeight: 800, color: C.red }}>{fmtMoney(grandTotalDebt)}</span>
+            </div>
+            {debtList.length === 0 ? (
+              <div style={{ textAlign: "center", padding: "32px", color: C.muted }}>🎉 Không có học sinh nào nợ học phí!</div>
+            ) : (
+              <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, overflow: "hidden" }}>
+                {debtList.map(({ student, total, items }) => (
+                  <div key={student.id} style={{ padding: "12px 16px", borderBottom: `1px solid ${C.border}` }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                      <div>
+                        <span style={{ fontWeight: 700, color: C.text, fontSize: 14 }}>{student.name}</span>
+                        <span style={{ color: C.muted, fontSize: 12, marginLeft: 8 }}>{student.parentPhone}</span>
+                      </div>
+                      <span style={{ fontWeight: 800, color: C.red, fontSize: 15 }}>{fmtMoney(total)}</span>
+                    </div>
+                    <div style={{ fontSize: 12, color: C.muted }}>
+                      {items.map((it, i) => `${it.cl.name} (T${it.month}/${it.year}: ${fmtMoney(it.amount)})`).join(" · ")}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+// ═══════════════════════════════ PAYROLL VIEW (Lương giáo viên) ═══════════════════════════════
+function PayrollView({ data, api }) {
+  const now = new Date();
+  const [month, setMonth] = useState(now.getMonth() + 1);
+  const [year, setYear] = useState(now.getFullYear());
+  const mRolls = data.payroll.filter((p) => p.month === month && p.year === year);
+
+  const rows = data.teachers.map((t) => {
+    const sessions = sessionsTaughtByTeacher(t.id, data.classes, data.attendance, month, year);
+    const roll = mRolls.find((p) => p.teacherId === t.id);
+    return { t, sessions, roll, amount: roll?.amount ?? t.feePerSession * sessions };
+  });
+
+  const totalExpected = rows.reduce((s, r) => s + r.amount, 0);
+  const totalPaid = rows.filter((r) => r.roll?.status === "paid").reduce((s, r) => s + r.roll.amount, 0);
+  const totalUnpaid = totalExpected - totalPaid;
+
+  const generate = async () => {
+    const ex = new Set(mRolls.map((p) => p.teacherId));
+    const news = rows.filter((r) => !ex.has(r.t.id) && r.sessions > 0)
+      .map((r) => ({ id: genId(), teacherId: r.t.id, month, year, sessionsTaught: r.sessions, amount: r.amount, paidDate: null, status: "unpaid" }));
+    if (!news.length) return alert("Không có giáo viên nào có buổi dạy mới cần tạo bảng lương (hoặc đã tạo đủ rồi).");
+    await api.addPayrolls(news);
+  };
+  const markPaid = async (row) => {
+    const label = `${row.t.name} (T${month}/${year})`;
+    if (row.roll) await api.updatePayrollStatus(row.roll.id, "paid", todayStr(), label);
+    else await api.addPayrolls([{ id: genId(), teacherId: row.t.id, month, year, sessionsTaught: row.sessions, amount: row.amount, paidDate: todayStr(), status: "paid" }]);
+  };
+  const markUnpaid = async (row) => { if (row.roll) await api.updatePayrollStatus(row.roll.id, "unpaid", null, `${row.t.name} (T${month}/${year})`); };
+
+  return (
+    <div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 14, marginBottom: 20 }}>
+        <StatCard icon={DollarSign} label="Tổng lương dự kiến" value={fmtMoney(totalExpected)} color={C.blue} />
+        <StatCard icon={CheckCircle} label="Đã trả" value={fmtMoney(totalPaid)} color={C.green} />
+        <StatCard icon={AlertCircle} label="Chưa trả" value={fmtMoney(totalUnpaid)} color={C.red} />
+      </div>
+      <Card title="👨‍🏫 Lương giáo viên theo buổi dạy" action={
         <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
           <select value={month} onChange={(e) => setMonth(+e.target.value)} style={{ padding: "7px 12px", borderRadius: 8, border: `1.5px solid ${C.border}`, fontSize: 14, outline: "none" }}>
             {Array.from({ length: 12 }, (_, i) => <option key={i + 1} value={i + 1}>Tháng {i + 1}</option>)}
@@ -1087,44 +1299,86 @@ function PaymentsView({ data, api }) {
           <select value={year} onChange={(e) => setYear(+e.target.value)} style={{ padding: "7px 12px", borderRadius: 8, border: `1.5px solid ${C.border}`, fontSize: 14, outline: "none" }}>
             {[year - 1, year, year + 1].map((y) => <option key={y} value={y}>{y}</option>)}
           </select>
-          <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} style={{ padding: "7px 12px", borderRadius: 8, border: `1.5px solid ${statusFilter === "unpaid" ? C.red : C.border}`, fontSize: 14, outline: "none", color: statusFilter === "unpaid" ? C.red : C.text }}>
-            <option value="">Tất cả trạng thái</option>
-            <option value="unpaid">⚠ Chưa thu ({unpaidCount})</option>
-            <option value="paid">✓ Đã thu</option>
-          </select>
-          <div style={{ position: "relative" }}><Search size={14} style={{ position: "absolute", left: 9, top: "50%", transform: "translateY(-50%)", color: C.muted }} />
-            <input placeholder="Tìm..." value={search} onChange={(e) => setSearch(e.target.value)} style={{ padding: "7px 12px 7px 30px", borderRadius: 8, border: `1.5px solid ${C.border}`, fontSize: 14, width: 140, outline: "none" }} /></div>
-          <Btn color={C.blue} onClick={generate}><RefreshCw size={14} />Tạo bản ghi</Btn>
-          <Btn color={C.green} onClick={() => exportMonthlyPaymentReport(rows, month, year)}><FileSpreadsheet size={14} />Xuất Excel</Btn>
+          <Btn color={C.blue} onClick={generate}><RefreshCw size={14} />Tạo bảng lương</Btn>
         </div>
       }>
+        <div style={{ marginBottom: 14, padding: 10, background: C.blue + "10", borderRadius: 8, fontSize: 12.5, color: C.navy }}>
+          💡 Số buổi tính theo <b>điểm danh thực tế</b> đã ghi nhận trong tháng — lớp nào chưa điểm danh sẽ chưa được tính vào lương.
+        </div>
         <div style={{ overflowX: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
-            <thead><tr style={{ background: C.bg }}>{["Học sinh", "Lớp", "Số buổi", "Học phí", "Trạng thái", "Ngày thu", "Thao tác"].map((h, i) => <Th key={i}>{h}</Th>)}</tr></thead>
+            <thead><tr style={{ background: C.bg }}>{["Giáo viên", "Môn", "Số buổi dạy", "Lương/buổi", "Tổng lương", "Trạng thái", "Thao tác"].map((h, i) => <Th key={i}>{h}</Th>)}</tr></thead>
             <tbody>
-              {rows.map((row, i) => (
-                <tr key={i} style={{ borderBottom: `1px solid ${C.border}` }} onMouseEnter={(e) => (e.currentTarget.style.background = "#f8fafc")} onMouseLeave={(e) => (e.currentTarget.style.background = "")}>
-                  <Td style={{ fontWeight: 700, color: C.text }}>{row.s.name}</Td>
-                  <Td><Badge color={C.blue}>{row.cl.name}</Badge></Td>
-                  <Td style={{ color: C.muted }}>{sessionsInMonth(row.cl.schedule, month, year)} buổi</Td>
-                  <Td style={{ fontWeight: 700, color: C.amber }}>{fmtMoney(row.pay?.amount ?? amountFor(row.cl))}</Td>
+              {rows.map((row) => (
+                <tr key={row.t.id} style={{ borderBottom: `1px solid ${C.border}` }} onMouseEnter={(e) => (e.currentTarget.style.background = "#f8fafc")} onMouseLeave={(e) => (e.currentTarget.style.background = "")}>
+                  <Td style={{ fontWeight: 700, color: C.text }}>{row.t.name}</Td>
+                  <Td><Badge color={C.purple}>{row.t.subject}</Badge></Td>
+                  <Td style={{ color: C.muted }}>{row.sessions} buổi</Td>
+                  <Td style={{ color: C.muted }}>{fmtMoney(row.t.feePerSession)}</Td>
+                  <Td style={{ fontWeight: 700, color: C.amber }}>{fmtMoney(row.amount)}</Td>
                   <Td>
-                    {!row.pay ? <Badge color={C.muted}>Chưa tạo</Badge>
-                      : row.pay.status === "paid" ? <Badge color={C.green}>✓ Đã thu</Badge>
-                      : <Badge color={C.red}>⚠ Chưa thu</Badge>}
+                    {!row.roll ? <Badge color={C.muted}>Chưa tạo</Badge>
+                      : row.roll.status === "paid" ? <Badge color={C.green}>✓ Đã trả</Badge>
+                      : <Badge color={C.red}>⚠ Chưa trả</Badge>}
                   </Td>
-                  <Td style={{ color: C.muted }}>{row.pay?.paidDate ? fmtDate(row.pay.paidDate) : "—"}</Td>
                   <Td>
-                    {(!row.pay || row.pay.status === "unpaid")
-                      ? <Btn color={C.green} style={{ padding: "5px 12px", fontSize: 13 }} onClick={() => markPaid(row)}><CheckCircle size={13} />Thu tiền</Btn>
+                    {row.sessions === 0 ? <span style={{ color: C.muted, fontSize: 12 }}>Chưa có buổi dạy</span>
+                      : (!row.roll || row.roll.status === "unpaid")
+                      ? <Btn color={C.green} style={{ padding: "5px 12px", fontSize: 13 }} onClick={() => markPaid(row)}><CheckCircle size={13} />Trả lương</Btn>
                       : <Btn color={C.red} outlined style={{ padding: "5px 12px", fontSize: 13 }} onClick={() => markUnpaid(row)}>Hoàn lại</Btn>}
                   </Td>
                 </tr>
               ))}
-              {!rows.length && <tr><td colSpan={7} style={{ padding: "32px", textAlign: "center", color: C.muted }}>Không có dữ liệu khớp bộ lọc</td></tr>}
+              {!rows.length && <tr><td colSpan={7} style={{ padding: "32px", textAlign: "center", color: C.muted }}>Chưa có giáo viên nào</td></tr>}
             </tbody>
           </table>
         </div>
+      </Card>
+    </div>
+  );
+}
+
+// ═══════════════════════════════ ACTIVITY LOG VIEW (Nhật ký hoạt động) ═══════════════════════════════
+const LOG_ENTITY_LABEL = { teacher: "Giáo viên", class: "Lớp học", student: "Học sinh", payment: "Học phí", payroll: "Lương GV" };
+const LOG_ACTION_STYLE = { create: { label: "Thêm", color: C.green }, update: { label: "Sửa", color: C.amber }, delete: { label: "Xóa", color: C.red } };
+function ActivityLogView({ data }) {
+  const [entityFilter, setEntityFilter] = useState("");
+  const sorted = [...data.activity_log].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+  const filtered = sorted.filter((l) => !entityFilter || l.entity === entityFilter);
+  const usedEntities = [...new Set(sorted.map((l) => l.entity))];
+
+  const fmtWhen = (iso) => {
+    const d = new Date(iso);
+    return d.toLocaleString("vi-VN", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
+  };
+
+  return (
+    <div>
+      <Card title={`📜 Nhật ký hoạt động (${filtered.length})`} action={
+        <select value={entityFilter} onChange={(e) => setEntityFilter(e.target.value)} style={{ padding: "7px 12px", borderRadius: 8, border: `1.5px solid ${C.border}`, fontSize: 14, outline: "none" }}>
+          <option value="">Tất cả loại</option>
+          {usedEntities.map((e) => <option key={e} value={e}>{LOG_ENTITY_LABEL[e] || e}</option>)}
+        </select>
+      }>
+        <div style={{ marginBottom: 14, padding: 10, background: C.amber + "12", borderRadius: 8, fontSize: 12.5, color: "#92650b" }}>
+          ⚠ Hệ thống dùng chung 1 tài khoản đăng nhập nên nhật ký chỉ ghi lại <b>việc gì, lúc nào</b> — chưa xác định được chính xác ai thực hiện.
+        </div>
+        {!filtered.length ? (
+          <div style={{ textAlign: "center", padding: "32px", color: C.muted }}>Chưa có hoạt động nào được ghi nhận.</div>
+        ) : (
+          <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, overflow: "hidden", maxHeight: 560, overflowY: "auto" }}>
+            {filtered.map((l) => {
+              const st = LOG_ACTION_STYLE[l.action] || { label: l.action, color: C.muted };
+              return (
+                <div key={l.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 16px", borderBottom: `1px solid ${C.border}` }}>
+                  <Badge color={st.color}>{st.label}</Badge>
+                  <div style={{ flex: 1, fontSize: 13.5, color: C.text }}>{l.summary}</div>
+                  <div style={{ fontSize: 12, color: C.muted, whiteSpace: "nowrap" }}>{fmtWhen(l.createdAt)}</div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </Card>
     </div>
   );
@@ -1197,7 +1451,9 @@ const NAV = [
   { id: "teachers", icon: User, label: "Giáo viên" },
   { id: "attendance", icon: ClipboardCheck, label: "Điểm danh" },
   { id: "payments", icon: DollarSign, label: "Học phí" },
+  { id: "payroll", icon: Wallet, label: "Lương GV" },
   { id: "reports", icon: BarChart2, label: "Báo cáo" },
+  { id: "activitylog", icon: History, label: "Nhật ký" },
 ];
 
 function AuthenticatedApp({ profile, onSignOut }) {
@@ -1236,8 +1492,8 @@ function AuthenticatedApp({ profile, onSignOut }) {
     let cancelled = false;
     (async () => {
       try {
-        const [teachers, classes, students, registrations, payments, attendance] = await Promise.all(TABLE_ORDER.map(fetchAll));
-        if (!cancelled) setData({ teachers, classes, students, registrations, payments, attendance });
+        const [teachers, classes, students, registrations, payments, attendance, payroll, activity_log] = await Promise.all(TABLE_ORDER.map(fetchAll));
+        if (!cancelled) setData({ teachers, classes, students, registrations, payments, attendance, payroll, activity_log });
       } catch (e) {
         console.error(e);
         if (!cancelled) showToast("⚠ Không thể tải dữ liệu — kiểm tra kết nối mạng", C.red);
@@ -1254,21 +1510,26 @@ function AuthenticatedApp({ profile, onSignOut }) {
     return () => { cancelled = true; supabase.removeChannel(channel); };
   }, [applyChange, showToast]);
 
+  // ── Nhật ký hoạt động: ghi lại (không chờ, không chặn UI) ──
+  const log = (action, entity, summary) => {
+    insertRow("activity_log", { id: genId(), action, entity, summary }).catch(() => {});
+  };
+
   // ── Mutation API passed down to views. State updates arrive via realtime. ──
   const api = {
-    addTeacher: async (t) => { try { await insertRow("teachers", { ...t, id: genId() }); } catch { showToast("⚠ Lỗi khi thêm giáo viên", C.red); } },
-    addTeachers: async (ts) => { try { await insertRows("teachers", ts.map((t) => ({ ...t, id: genId() }))); showToast(`✓ Đã nhập ${ts.length} giáo viên`); } catch { showToast("⚠ Lỗi khi nhập danh sách giáo viên", C.red); } },
-    updateTeacher: async (t) => { try { await updateRow("teachers", t.id, MAPPERS.teachers.toRow(t)); } catch { showToast("⚠ Lỗi khi cập nhật giáo viên", C.red); } },
-    deleteTeacher: async (id) => { try { await deleteRow("teachers", id); } catch { showToast("⚠ Lỗi khi xóa giáo viên", C.red); } },
+    addTeacher: async (t) => { try { await insertRow("teachers", { ...t, id: genId() }); log("create", "teacher", `Thêm giáo viên: ${t.name}`); } catch { showToast("⚠ Lỗi khi thêm giáo viên", C.red); } },
+    addTeachers: async (ts) => { try { await insertRows("teachers", ts.map((t) => ({ ...t, id: genId() }))); log("create", "teacher", `Nhập Excel ${ts.length} giáo viên`); showToast(`✓ Đã nhập ${ts.length} giáo viên`); } catch { showToast("⚠ Lỗi khi nhập danh sách giáo viên", C.red); } },
+    updateTeacher: async (t) => { try { await updateRow("teachers", t.id, MAPPERS.teachers.toRow(t)); log("update", "teacher", `Sửa giáo viên: ${t.name}`); } catch { showToast("⚠ Lỗi khi cập nhật giáo viên", C.red); } },
+    deleteTeacher: async (id, name) => { try { await deleteRow("teachers", id); log("delete", "teacher", `Xóa giáo viên: ${name || id}`); } catch { showToast("⚠ Lỗi khi xóa giáo viên", C.red); } },
 
-    addClass: async (c) => { try { await insertRow("classes", { ...c, id: genId() }); } catch { showToast("⚠ Lỗi khi thêm lớp", C.red); } },
-    updateClass: async (c) => { try { await updateRow("classes", c.id, MAPPERS.classes.toRow(c)); } catch { showToast("⚠ Lỗi khi cập nhật lớp", C.red); } },
-    deleteClass: async (id) => { try { await deleteRow("classes", id); } catch { showToast("⚠ Lỗi khi xóa lớp", C.red); } },
+    addClass: async (c) => { try { await insertRow("classes", { ...c, id: genId() }); log("create", "class", `Thêm lớp: ${c.name}`); } catch { showToast("⚠ Lỗi khi thêm lớp", C.red); } },
+    updateClass: async (c) => { try { await updateRow("classes", c.id, MAPPERS.classes.toRow(c)); log("update", "class", `Sửa lớp: ${c.name}`); } catch { showToast("⚠ Lỗi khi cập nhật lớp", C.red); } },
+    deleteClass: async (id, name) => { try { await deleteRow("classes", id); log("delete", "class", `Xóa lớp: ${name || id}`); } catch { showToast("⚠ Lỗi khi xóa lớp", C.red); } },
 
-    addStudent: async (s) => { try { await insertRow("students", { ...s, id: genId() }); } catch { showToast("⚠ Lỗi khi thêm học sinh", C.red); } },
-    addStudents: async (ss) => { try { await insertRows("students", ss); showToast(`✓ Đã nhập ${ss.length} học sinh`); } catch { showToast("⚠ Lỗi khi nhập danh sách học sinh", C.red); } },
-    updateStudent: async (s) => { try { await updateRow("students", s.id, MAPPERS.students.toRow(s)); } catch { showToast("⚠ Lỗi khi cập nhật học sinh", C.red); } },
-    deleteStudent: async (id) => { try { await deleteRow("students", id); } catch { showToast("⚠ Lỗi khi xóa học sinh", C.red); } },
+    addStudent: async (s) => { try { await insertRow("students", { ...s, id: genId() }); log("create", "student", `Thêm học sinh: ${s.name}`); } catch { showToast("⚠ Lỗi khi thêm học sinh", C.red); } },
+    addStudents: async (ss) => { try { await insertRows("students", ss); log("create", "student", `Nhập Excel ${ss.length} học sinh`); showToast(`✓ Đã nhập ${ss.length} học sinh`); } catch { showToast("⚠ Lỗi khi nhập danh sách học sinh", C.red); } },
+    updateStudent: async (s) => { try { await updateRow("students", s.id, MAPPERS.students.toRow(s)); log("update", "student", `Sửa học sinh: ${s.name}`); } catch { showToast("⚠ Lỗi khi cập nhật học sinh", C.red); } },
+    deleteStudent: async (id, name) => { try { await deleteRow("students", id); log("delete", "student", `Xóa học sinh: ${name || id}`); } catch { showToast("⚠ Lỗi khi xóa học sinh", C.red); } },
 
     addRegistration: async (r) => { try { await insertRow("registrations", r); } catch { showToast("⚠ Lỗi khi đăng ký lớp", C.red); } },
     addRegistrations: async (rs) => { try { await insertRows("registrations", rs); } catch { showToast("⚠ Lỗi khi đăng ký lớp hàng loạt", C.red); } },
@@ -1276,12 +1537,15 @@ function AuthenticatedApp({ profile, onSignOut }) {
 
     addPayment: async (p) => { try { await insertRow("payments", p); } catch { showToast("⚠ Lỗi khi ghi nhận học phí", C.red); } },
     addPayments: async (ps) => { try { await insertRows("payments", ps); } catch { showToast("⚠ Lỗi khi tạo bản ghi học phí", C.red); } },
-    updatePaymentStatus: async (id, status, paid_date) => { try { await updateRow("payments", id, { status, paid_date }); } catch { showToast("⚠ Lỗi khi cập nhật học phí", C.red); } },
+    updatePaymentStatus: async (id, status, paid_date, label) => { try { await updateRow("payments", id, { status, paid_date }); if (label) log("update", "payment", `${status === "paid" ? "Thu học phí" : "Hoàn lại học phí"}: ${label}`); } catch { showToast("⚠ Lỗi khi cập nhật học phí", C.red); } },
 
     saveAttendance: async (rows) => {
       try { await upsertRows("attendance", rows, "class_id,student_id,date"); showToast("✓ Đã lưu điểm danh"); }
       catch { showToast("⚠ Lỗi khi lưu điểm danh", C.red); }
     },
+
+    addPayrolls: async (ps) => { try { await insertRows("payroll", ps); } catch { showToast("⚠ Lỗi khi tạo bảng lương", C.red); } },
+    updatePayrollStatus: async (id, status, paid_date, label) => { try { await updateRow("payroll", id, { status, paid_date }); if (label) log("update", "payroll", `${status === "paid" ? "Trả lương" : "Hoàn lại lương"}: ${label}`); } catch { showToast("⚠ Lỗi khi cập nhật lương", C.red); } },
   };
 
   const exportJSON = () => {
@@ -1296,7 +1560,7 @@ function AuthenticatedApp({ profile, onSignOut }) {
 
   const pushFullDataset = async (dataset) => {
     // delete children first to respect FK constraints, then re-insert in dependency order
-    await deleteAll("attendance"); await deleteAll("payments"); await deleteAll("registrations"); await deleteAll("classes");
+    await deleteAll("activity_log"); await deleteAll("payroll"); await deleteAll("attendance"); await deleteAll("payments"); await deleteAll("registrations"); await deleteAll("classes");
     await deleteAll("students"); await deleteAll("teachers");
     await insertRows("teachers", dataset.teachers);
     await insertRows("classes", dataset.classes);
@@ -1304,6 +1568,8 @@ function AuthenticatedApp({ profile, onSignOut }) {
     await insertRows("registrations", dataset.registrations);
     await insertRows("payments", dataset.payments);
     await insertRows("attendance", dataset.attendance || []);
+    await insertRows("payroll", dataset.payroll || []);
+    await insertRows("activity_log", dataset.activity_log || []);
   };
 
   const importJSON = () => {
@@ -1318,7 +1584,9 @@ function AuthenticatedApp({ profile, onSignOut }) {
           const keys = ["teachers", "classes", "students", "registrations", "payments"];
           if (!keys.every((k) => Array.isArray(parsed[k]))) return alert("❌ File không đúng định dạng Foster!");
           if (!Array.isArray(parsed.attendance)) parsed.attendance = [];
-          const info = `📂 ${file.name}\n\n• ${parsed.teachers.length} giáo viên\n• ${parsed.classes.length} lớp học\n• ${parsed.students.length} học sinh\n• ${parsed.registrations.length} đăng ký\n• ${parsed.payments.length} bản ghi học phí\n• ${parsed.attendance.length} bản ghi điểm danh\n\n⚠ Dữ liệu hiện tại (trên mọi thiết bị) sẽ bị ghi đè. Tiếp tục?`;
+          if (!Array.isArray(parsed.payroll)) parsed.payroll = [];
+          if (!Array.isArray(parsed.activity_log)) parsed.activity_log = [];
+          const info = `📂 ${file.name}\n\n• ${parsed.teachers.length} giáo viên\n• ${parsed.classes.length} lớp học\n• ${parsed.students.length} học sinh\n• ${parsed.registrations.length} đăng ký\n• ${parsed.payments.length} bản ghi học phí\n• ${parsed.attendance.length} bản ghi điểm danh\n• ${parsed.payroll.length} bản ghi lương\n\n⚠ Dữ liệu hiện tại (trên mọi thiết bị) sẽ bị ghi đè. Tiếp tục?`;
           if (!confirm(info)) return;
           setData(parsed);
           await pushFullDataset(parsed);
@@ -1434,7 +1702,9 @@ function AuthenticatedApp({ profile, onSignOut }) {
           {tab === "teachers" && <TeachersView data={data} api={api} isAdmin={isAdmin} />}
           {tab === "attendance" && <AttendanceView data={data} api={api} />}
           {tab === "payments" && <PaymentsView data={data} api={api} />}
+          {tab === "payroll" && <PayrollView data={data} api={api} />}
           {tab === "reports" && <ReportsView data={data} />}
+          {tab === "activitylog" && <ActivityLogView data={data} />}
         </div>
       </div>
     </div>

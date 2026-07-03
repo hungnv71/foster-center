@@ -80,6 +80,18 @@ export function exportFullWorkbook(data) {
     });
   XLSX.utils.book_append_sheet(wb, sheetFrom(attRows), "Điểm danh");
 
+  const payrollRows = (data.payroll || [])
+    .sort((a, b) => b.year - a.year || b.month - a.month)
+    .map((p) => {
+      const t = data.teachers.find((x) => x.id === p.teacherId);
+      return {
+        "Tháng": p.month, "Năm": p.year, "Giáo viên": t?.name || "", "Số buổi": p.sessionsTaught,
+        "Số tiền": p.amount, "Trạng thái": p.status === "paid" ? "Đã trả" : "Chưa trả",
+        "Ngày trả": p.paidDate ? fmtDateVN(p.paidDate) : "",
+      };
+    });
+  XLSX.utils.book_append_sheet(wb, sheetFrom(payrollRows), "Lương GV");
+
   XLSX.writeFile(wb, `Foster-du-lieu-${todayTag()}.xlsx`);
 }
 
