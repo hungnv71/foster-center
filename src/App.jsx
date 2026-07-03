@@ -21,7 +21,7 @@ const TABLE_ORDER = ["teachers", "classes", "students", "registrations", "paymen
 const DAY_CODE_BY_JSDAY = ["CN", "T2", "T3", "T4", "T5", "T6", "T7"];
 const dayCodeOf = (dateStr) => { const [y, m, d] = dateStr.split("-").map(Number); return DAY_CODE_BY_JSDAY[new Date(y, m - 1, d).getDay()]; };
 const ATT_STATUS = { present: { label: "Có mặt", color: "#10B981" }, absent: { label: "Vắng", color: "#EF4444" }, late: { label: "Muộn", color: "#F5A623" }, excused: { label: "Có phép", color: "#8B5CF6" } };
-const ROOMS = ["P.102", "P.103", "P.104", "P.202", "P.203", "P.204"];
+const ROOMS = ["P.102", "P.103", "P.104", "P.202", "P.203", "P.204", "P.205"];
 const MAX_SESSIONS_PER_WEEK = 3;
 // Đăng nhập đang TẠM TẮT — chưa có tài khoản Supabase Auth nào được tạo.
 // Bật lại bằng cách đổi thành true SAU KHI đã tạo 2 tài khoản + khóa RLS (xem hướng dẫn trước đó).
@@ -1399,6 +1399,11 @@ function AuthenticatedApp({ profile, onSignOut }) {
               </button>
             </div>
           )}
+          <div style={{ paddingTop: 10, borderTop: "1px solid rgba(255,255,255,.1)" }}>
+            <button onClick={lockSimpleAuth} style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "7px 0", borderRadius: 8, border: "none", cursor: "pointer", background: "transparent", color: "rgba(255,255,255,.4)", fontSize: 11.5, fontWeight: 600 }}>
+              <LogOut size={12} />Khóa lại
+            </button>
+          </div>
         </div>
       </div>
       {/* ── Toast ── */}
@@ -1437,7 +1442,7 @@ function AuthenticatedApp({ profile, onSignOut }) {
 }
 
 // ═══════════════════════════════ AUTH GATE ═══════════════════════════════
-export default function FosterApp() {
+function FosterAppInner() {
   const [status, setStatus] = useState(AUTH_ENABLED ? "checking" : "in");
   const [profile, setProfile] = useState(AUTH_ENABLED ? null : { role: "admin" });
 
@@ -1470,4 +1475,60 @@ export default function FosterApp() {
   if (status === "out") return <LoginScreen onLoggedIn={() => {}} />;
 
   return <AuthenticatedApp profile={profile || { role: "staff" }} onSignOut={signOut} />;
+}
+
+// ═══════════════════════════════ SIMPLE SHARED-PASSWORD GATE ═══════════════════════════════
+// Chặn ở giao diện bằng 1 tài khoản/mật khẩu dùng chung — KHÔNG khóa ở tầng database.
+// Đủ dùng để ngăn người ngoài tình cờ có link vào xem/sửa dữ liệu; không chặn được
+// người cố tình mở DevTools. Muốn khóa thật ở tầng dữ liệu, dùng lại AUTH_ENABLED
+// (Supabase Auth) đã xây sẵn phía trên.
+const SIMPLE_LOGIN = { username: "foster2026", password: "Hanoi2026@" };
+const SIMPLE_AUTH_KEY = "foster_unlocked_v1";
+export function lockSimpleAuth() { localStorage.removeItem(SIMPLE_AUTH_KEY); window.location.reload(); }
+
+function SimplePasswordGate({ children }) {
+  const [unlocked, setUnlocked] = useState(() => localStorage.getItem(SIMPLE_AUTH_KEY) === "1");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+
+  const submit = (e) => {
+    e.preventDefault();
+    if (username.trim() === SIMPLE_LOGIN.username && password === SIMPLE_LOGIN.password) {
+      localStorage.setItem(SIMPLE_AUTH_KEY, "1");
+      setUnlocked(true);
+    } else {
+      setError("Sai tài khoản hoặc mật khẩu.");
+    }
+  };
+
+  if (unlocked) return children;
+
+  return (
+    <div style={{ height: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: C.bg, fontFamily: "system-ui,-apple-system,sans-serif" }}>
+      <form onSubmit={submit} style={{ background: "#fff", borderRadius: 18, padding: "36px 34px", width: 360, boxShadow: "0 8px 32px rgba(27,58,107,.12)" }}>
+        <div style={{ textAlign: "center", marginBottom: 26 }}>
+          <div style={{ display: "inline-flex", background: C.bg, borderRadius: 14, padding: 12, marginBottom: 12 }}>
+            <Lock size={26} color={C.navy} />
+          </div>
+          <div style={{ fontSize: 22, fontWeight: 800, color: C.navy }}>FOSTER</div>
+          <div style={{ fontSize: 13, color: C.muted, marginTop: 2 }}>Nhập tài khoản để tiếp tục</div>
+        </div>
+        <Inp label="Tài khoản" value={username} onChange={(e) => setUsername(e.target.value)} autoFocus />
+        <Inp label="Mật khẩu" type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
+        {error && <div style={{ color: C.red, fontSize: 13, marginBottom: 12, marginTop: -4 }}>{error}</div>}
+        <button type="submit" style={{ width: "100%", marginTop: 6, padding: "11px 0", borderRadius: 10, border: "none", background: C.navy, color: "#fff", fontSize: 15, fontWeight: 700, cursor: "pointer" }}>
+          Đăng nhập
+        </button>
+      </form>
+    </div>
+  );
+}
+
+export default function FosterApp() {
+  return (
+    <SimplePasswordGate>
+      <FosterAppInner />
+    </SimplePasswordGate>
+  );
 }
