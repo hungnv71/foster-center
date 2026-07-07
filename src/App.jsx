@@ -727,15 +727,26 @@ function StudentsView({ data, api, isAdmin }) {
   const [gradeFilter, setGradeFilter] = useState("");
   const [modal, setModal] = useState(null);
   const [confirmDel, setConfirmDel] = useState(null);
-  const [viewCls, setViewCls] = useState(null);
   const [importPreview, setImportPreview] = useState(null);
   const [importing, setImporting] = useState(false);
-  const blank = { name: "", phone: "", parentName: "", parentPhone: "", grade: "10", address: "", joinDate: todayStr() };
+  const blank = { name: "", phone: "", parentName: "", parentPhone: "", parentCccd: "", parentTaxCode: "", grade: "10", address: "", joinDate: todayStr() };
   const filtered = data.students
     .filter((s) => s.name.toLowerCase().includes(search.toLowerCase()) || s.phone.includes(search) || s.grade.includes(search))
     .filter((s) => !gradeFilter || s.grade === gradeFilter);
   const countCls = (id) => data.registrations.filter((r) => r.studentId === id && r.status === "active").length;
-  const handleSave = async (s) => { setModal(null); if (s.id) await api.updateStudent(s); else await api.addStudent(s); };
+  const handleSave = async (s, newClassIds) => {
+    setModal(null);
+    if (s.id) {
+      await api.updateStudent(s);
+    } else {
+      const id = genId();
+      await api.addStudent({ ...s, id });
+      if (newClassIds && newClassIds.length) {
+        const regs = newClassIds.map((classId) => ({ id: genId(), studentId: id, classId, startDate: todayStr(), status: "active" }));
+        await api.addRegistrations(regs);
+      }
+    }
+  };
   const handleDel = async (id) => { setConfirmDel(null); await api.deleteStudent(id, data.students.find((s) => s.id === id)?.name); };
   const startImport = () => pickExcelFile(async (file) => {
     try {
@@ -791,7 +802,7 @@ function StudentsView({ data, api, isAdmin }) {
                   <Td style={{ color: C.text }}>{s.parentName}</Td>
                   <Td style={{ color: C.text }}>{s.parentPhone}</Td>
                   <Td>
-                    <button onClick={() => setViewCls(s.id)} style={{ background: C.blue + "18", border: "none", borderRadius: 6, padding: "4px 12px", cursor: "pointer", color: C.blue, fontWeight: 700, fontSize: 13 }}>
+                    <button onClick={() => setModal({ student: { ...s } })} style={{ background: C.blue + "18", border: "none", borderRadius: 6, padding: "4px 12px", cursor: "pointer", color: C.blue, fontWeight: 700, fontSize: 13 }}>
                       {countCls(s.id)} lớp
                     </button>
                   </Td>
@@ -807,14 +818,11 @@ function StudentsView({ data, api, isAdmin }) {
         </div>
       </Card>
       <Modal open={!!modal} onClose={() => setModal(null)} title={modal?.student.id ? "Chỉnh sửa học sinh" : "Thêm học sinh"}>
-        {modal && <StudentForm student={modal.student} onSave={handleSave} onCancel={() => setModal(null)} />}
+        {modal && <StudentForm student={modal.student} data={data} api={api} onSave={handleSave} onCancel={() => setModal(null)} />}
       </Modal>
       <Modal open={!!confirmDel} onClose={() => setConfirmDel(null)} title="Xác nhận xóa học sinh">
         <p style={{ color: C.text, marginBottom: 20 }}>Xóa học sinh sẽ xóa toàn bộ đăng ký lớp và lịch sử học phí. Tiếp tục?</p>
         <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}><Btn color={C.muted} outlined onClick={() => setConfirmDel(null)}>Hủy</Btn><Btn color={C.red} onClick={() => handleDel(confirmDel)}>Xóa</Btn></div>
-      </Modal>
-      <Modal open={!!viewCls} onClose={() => setViewCls(null)} title={`Lớp của: ${data.students.find((s) => s.id === viewCls)?.name || ""}`}>
-        {viewCls && <ClassesOfStudent studentId={viewCls} data={data} api={api} />}
       </Modal>
       <Modal open={!!importPreview} onClose={() => setImportPreview(null)} title="Nhập danh sách học sinh từ Excel">
         {importPreview && <ImportPreview items={importPreview.students} errors={importPreview.errors} warnings={importPreview.warnings} showClasses itemNoun="học sinh" color={C.green} busy={importing} onCancel={() => setImportPreview(null)} onConfirm={confirmImport} />}
@@ -825,9 +833,13 @@ function StudentsView({ data, api, isAdmin }) {
     </div>
   );
 }
-function StudentForm({ student, onSave, onCancel }) {
+function StudentForm({ student, data, api, onSave, onCancel }) {
   const [f, setF] = useState(student);
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
+  const isNew = !student.id;
+  const [newClassIds, setNewClassIds] = useState([]);
+  const toggleNewClass = (id) => setNewClassIds((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id]));
+
   return (
     <div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
@@ -836,12 +848,33 @@ function StudentForm({ student, onSave, onCancel }) {
         <Inp label="SĐT học sinh" value={f.phone} onChange={(e) => set("phone", e.target.value)} placeholder="09xxxxxxxx" />
         <Inp label="Họ tên phụ huynh *" value={f.parentName} onChange={(e) => set("parentName", e.target.value)} placeholder="Tên phụ huynh" />
         <Inp label="SĐT phụ huynh *" value={f.parentPhone} onChange={(e) => set("parentPhone", e.target.value)} placeholder="09xxxxxxxx" />
+        <Inp label="Số CCCD phụ huynh" value={f.parentCccd} onChange={(e) => set("parentCccd", e.target.value)} placeholder="Phục vụ xuất hóa đơn" />
+        <Inp label="Mã số thuế phụ huynh (nếu có)" value={f.parentTaxCode} onChange={(e) => set("parentTaxCode", e.target.value)} placeholder="Để trống nếu không có" />
         <div style={{ gridColumn: "1/-1" }}><Inp label="Địa chỉ" value={f.address} onChange={(e) => set("address", e.target.value)} placeholder="Số nhà, đường, quận" /></div>
         <Inp label="Ngày nhập học" type="date" value={f.joinDate} onChange={(e) => set("joinDate", e.target.value)} />
       </div>
+
+      <div style={{ marginTop: 8, marginBottom: 16 }}>
+        <label style={{ display: "block", marginBottom: 8, fontSize: 13, fontWeight: 600, color: C.text }}>Lớp học</label>
+        {isNew ? (
+          <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, padding: 12, maxHeight: 180, overflowY: "auto" }}>
+            {data.classes.filter((c) => c.status === "active").map((c) => (
+              <label key={c.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0", cursor: "pointer", fontSize: 13.5, color: C.text }}>
+                <input type="checkbox" checked={newClassIds.includes(c.id)} onChange={() => toggleNewClass(c.id)} />
+                <span style={{ fontWeight: 600 }}>{c.name}</span>
+                <span style={{ color: C.muted, fontSize: 12 }}>· {c.subject} · {scheduleSummary(c.schedule)}</span>
+              </label>
+            ))}
+            {!data.classes.some((c) => c.status === "active") && <div style={{ color: C.muted, fontSize: 13 }}>Chưa có lớp nào đang hoạt động</div>}
+          </div>
+        ) : (
+          <ClassesOfStudent studentId={f.id} data={data} api={api} />
+        )}
+      </div>
+
       <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 4 }}>
         <Btn color={C.muted} outlined onClick={onCancel}>Hủy</Btn>
-        <Btn color={C.green} onClick={() => { if (!f.name.trim()) return alert("Nhập tên học sinh!"); onSave(f); }}>💾 Lưu</Btn>
+        <Btn color={C.green} onClick={() => { if (!f.name.trim()) return alert("Nhập tên học sinh!"); onSave(f, newClassIds); }}>💾 Lưu</Btn>
       </div>
     </div>
   );
@@ -1566,7 +1599,7 @@ function AuthenticatedApp({ profile, onSignOut }) {
     updateClass: async (c) => { try { await updateRow("classes", c.id, MAPPERS.classes.toRow(c)); log("update", "class", `Sửa lớp: ${c.name}`); } catch { showToast("⚠ Lỗi khi cập nhật lớp", C.red); } },
     deleteClass: async (id, name) => { try { await deleteRow("classes", id); log("delete", "class", `Xóa lớp: ${name || id}`); } catch { showToast("⚠ Lỗi khi xóa lớp", C.red); } },
 
-    addStudent: async (s) => { try { await insertRow("students", { ...s, id: genId() }); log("create", "student", `Thêm học sinh: ${s.name}`); } catch { showToast("⚠ Lỗi khi thêm học sinh", C.red); } },
+    addStudent: async (s) => { try { await insertRow("students", { ...s, id: s.id || genId() }); log("create", "student", `Thêm học sinh: ${s.name}`); } catch { showToast("⚠ Lỗi khi thêm học sinh", C.red); } },
     addStudents: async (ss) => { try { await insertRows("students", ss); log("create", "student", `Nhập Excel ${ss.length} học sinh`); showToast(`✓ Đã nhập ${ss.length} học sinh`); } catch { showToast("⚠ Lỗi khi nhập danh sách học sinh", C.red); } },
     updateStudent: async (s) => { try { await updateRow("students", s.id, MAPPERS.students.toRow(s)); log("update", "student", `Sửa học sinh: ${s.name}`); } catch { showToast("⚠ Lỗi khi cập nhật học sinh", C.red); } },
     deleteStudent: async (id, name) => { try { await deleteRow("students", id); log("delete", "student", `Xóa học sinh: ${name || id}`); } catch { showToast("⚠ Lỗi khi xóa học sinh", C.red); } },

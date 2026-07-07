@@ -44,6 +44,7 @@ const buildStudentRows = (data) => data.students.map((s) => {
   const n = data.registrations.filter((r) => r.studentId === s.id && r.status === "active").length;
   return {
     "Họ tên": s.name, "Khối": s.grade, "SĐT": s.phone, "Phụ huynh": s.parentName, "SĐT PH": s.parentPhone,
+    "CCCD PH": s.parentCccd || "", "MST PH": s.parentTaxCode || "",
     "Địa chỉ": s.address, "Số lớp đang học": n, "Ngày nhập học": fmtDateVN(s.joinDate),
   };
 });

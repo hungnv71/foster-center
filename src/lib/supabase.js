@@ -53,10 +53,12 @@ export const classToRow = (c) => ({
 export const rowToStudent = (r) => ({
   id: r.id, name: r.name, phone: r.phone, parentName: r.parent_name, parentPhone: r.parent_phone,
   grade: r.grade, address: r.address, joinDate: r.join_date,
+  parentCccd: r.parent_cccd || "", parentTaxCode: r.parent_tax_code || "",
 });
 export const studentToRow = (s) => ({
   id: s.id, name: s.name, phone: s.phone, parent_name: s.parentName, parent_phone: s.parentPhone,
   grade: s.grade, address: s.address, join_date: s.joinDate || null,
+  parent_cccd: s.parentCccd || null, parent_tax_code: s.parentTaxCode || null,
 });
 
 export const rowToReg = (r) => ({

@@ -56,6 +56,8 @@ export async function parseStudentsExcel(file) {
       phone: pick(row, "SĐT", "SDT", "SĐT HS", "Điện thoại"),
       parentName: pick(row, "Phụ huynh", "Phu huynh", "Tên phụ huynh"),
       parentPhone: pick(row, "SĐT PH", "SDT PH", "SĐT phụ huynh"),
+      parentCccd: pick(row, "CCCD PH", "CCCD", "Số CCCD phụ huynh", "CCCD phụ huynh"),
+      parentTaxCode: pick(row, "MST PH", "MST", "Mã số thuế", "Mã số thuế phụ huynh"),
       address: pick(row, "Địa chỉ", "Dia chi"),
       joinDate: toISODate(row["Ngày nhập học"] ?? row["Ngay nhap hoc"]) || todayStr(),
       classNames,
@@ -94,8 +96,8 @@ function downloadTemplate(rows, sheetName, fileName, colWidths) {
 
 export function downloadStudentTemplate() {
   downloadTemplate(
-    [{ "Họ tên": "Nguyễn Văn A", "Khối": "10", "SĐT": "0900000000", "Phụ huynh": "Nguyễn Văn B", "SĐT PH": "0911111111", "Địa chỉ": "12 Lê Lợi, Q1", "Ngày nhập học": "01/07/2026", "Lớp học": "Toán 10A, Anh 9A" }],
-    "Học sinh", "Mau-danh-sach-hoc-sinh.xlsx", [20, 8, 14, 20, 14, 28, 14, 22]
+    [{ "Họ tên": "Nguyễn Văn A", "Khối": "10", "SĐT": "0900000000", "Phụ huynh": "Nguyễn Văn B", "SĐT PH": "0911111111", "CCCD PH": "", "MST PH": "", "Địa chỉ": "12 Lê Lợi, Q1", "Ngày nhập học": "01/07/2026", "Lớp học": "Toán 10A, Anh 9A" }],
+    "Học sinh", "Mau-danh-sach-hoc-sinh.xlsx", [20, 8, 14, 20, 14, 16, 12, 28, 14, 22]
   );
 }
 export function downloadTeacherTemplate() {
