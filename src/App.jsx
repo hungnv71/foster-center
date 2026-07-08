@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from "recharts";
 import { Home, BookOpen, Users, User, DollarSign, BarChart2, Plus, Edit2, Trash2, Search, X, CheckCircle, GraduationCap, AlertCircle, RefreshCw, Download, Upload, FileSpreadsheet, Wifi, WifiOff, FileUp, ClipboardCheck } from "lucide-react";
 import { supabase, fetchAll, insertRow, insertRows, updateRow, deleteRow, deleteRows, deleteAll, upsertRows, MAPPERS, signIn, signOut, getSession, getMyProfile } from "./lib/supabase.js";
-import { LogOut, Lock, Wallet, History } from "lucide-react";
+import { LogOut, Lock, Wallet, History, Bell, TrendingUp, PieChart as PieIcon, CalendarDays } from "lucide-react";
 import { exportFullWorkbook, exportMonthlyPaymentReport, exportSummaryReport, exportTeachersTab, exportClassesTab, exportStudentsTab, exportAttendanceTab, exportPayrollTab, exportActivityLogTab, exportDashboardTab, exportDebtSummaryTab, exportMonthlyPayrollReport } from "./lib/excelExport.js";
 import { parseStudentsExcel, parseTeachersExcel, downloadStudentTemplate, downloadTeacherTemplate } from "./lib/excelImport.js";
 import leafIcon from "./assets/leaf-icon.png";
@@ -15,7 +15,7 @@ const todayStr = () => new Date().toISOString().slice(0, 10);
 const SUBJECTS = ["Toán", "Ngữ Văn", "Tiếng Anh", "Vật Lý", "Hóa Học", "Sinh Học", "Lịch Sử", "Địa Lý", "Tin Học"];
 const GRADES = ["6", "7", "8", "9", "10", "11", "12"];
 const DAYS = ["T2", "T3", "T4", "T5", "T6", "T7", "CN"];
-const C = { navy: "#1B3A6B", amber: "#F5A623", blue: "#3B82F6", green: "#10B981", red: "#EF4444", purple: "#8B5CF6", bg: "#EFF3F8", border: "#E2E8F0", text: "#1E293B", muted: "#64748B" };
+const C = { navy: "#132A52", navyLight: "#1B3A6B", amber: "#F5A623", blue: "#3B82F6", green: "#10B981", red: "#EF4444", purple: "#8B5CF6", bg: "#F6F7FA", border: "#EEF1F5", text: "#0F172A", muted: "#64748B" };
 const PIE_COLORS = [C.blue, C.green, C.purple, C.amber, C.red, "#06B6D4", "#EC4899", "#84CC16"];
 const TABLE_ORDER = ["teachers", "classes", "students", "registrations", "payments", "attendance", "payroll", "activity_log", "session_overrides"];
 const DAY_CODE_BY_JSDAY = ["CN", "T2", "T3", "T4", "T5", "T6", "T7"];
@@ -162,56 +162,57 @@ const SAMPLE_DATA = {
 // ═══════════════════════════════ SHARED UI ═══════════════════════════════
 const Inp = ({ label, ...p }) => (
   <div style={{ marginBottom: 14 }}>
-    {label && <label style={{ display: "block", marginBottom: 4, fontSize: 13, fontWeight: 600, color: C.text }}>{label}</label>}
-    <input style={{ width: "100%", padding: "9px 12px", borderRadius: 8, border: `1.5px solid ${C.border}`, outline: "none", fontSize: 14, color: C.text, boxSizing: "border-box", background: "#fff" }} {...p} />
+    {label && <label style={{ display: "block", marginBottom: 5, fontSize: 12.5, fontWeight: 500, color: C.muted }}>{label}</label>}
+    <input style={{ width: "100%", padding: "9px 12px", borderRadius: 9, border: `1px solid ${C.border}`, outline: "none", fontSize: 14, color: C.text, boxSizing: "border-box", background: "#fff" }} {...p} />
   </div>
 );
 const Sel = ({ label, children, ...p }) => (
   <div style={{ marginBottom: 14 }}>
-    {label && <label style={{ display: "block", marginBottom: 4, fontSize: 13, fontWeight: 600, color: C.text }}>{label}</label>}
-    <select style={{ width: "100%", padding: "9px 12px", borderRadius: 8, border: `1.5px solid ${C.border}`, outline: "none", fontSize: 14, color: C.text, background: "#fff", boxSizing: "border-box" }} {...p}>{children}</select>
+    {label && <label style={{ display: "block", marginBottom: 5, fontSize: 12.5, fontWeight: 500, color: C.muted }}>{label}</label>}
+    <select style={{ width: "100%", padding: "9px 12px", borderRadius: 9, border: `1px solid ${C.border}`, outline: "none", fontSize: 14, color: C.text, background: "#fff", boxSizing: "border-box" }} {...p}>{children}</select>
   </div>
 );
 const Btn = ({ color = C.blue, outlined, style: s, ...p }) => (
-  <button style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "8px 16px", borderRadius: 8, fontSize: 14, fontWeight: 600, cursor: "pointer", border: outlined ? `2px solid ${color}` : "none", background: outlined ? "transparent" : color, color: outlined ? color : "#fff", ...s }} {...p} />
+  <button style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "8px 16px", borderRadius: 9, fontSize: 13.5, fontWeight: 600, cursor: "pointer", border: outlined ? `1.5px solid ${color}` : "none", background: outlined ? "#fff" : color, color: outlined ? color : "#fff", boxShadow: outlined ? "none" : `0 1px 2px ${color}40`, ...s }} {...p} />
 );
 const Modal = ({ open, onClose, title, children }) => !open ? null : (
-  <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.5)", zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }} onClick={onClose}>
-    <div style={{ background: "#fff", borderRadius: 16, padding: 28, width: "100%", maxWidth: 540, maxHeight: "92vh", overflowY: "auto" }} onClick={(e) => e.stopPropagation()}>
+  <div style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,.45)", zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }} onClick={onClose}>
+    <div style={{ background: "#fff", borderRadius: 16, padding: 26, width: "100%", maxWidth: 540, maxHeight: "92vh", overflowY: "auto", boxShadow: "0 20px 60px rgba(15,23,42,.25)" }} onClick={(e) => e.stopPropagation()}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
-        <h2 style={{ margin: 0, fontSize: 18, fontWeight: 800, color: C.text }}>{title}</h2>
-        <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", padding: 4 }}><X size={20} color={C.muted} /></button>
+        <h2 style={{ margin: 0, fontSize: 17, fontWeight: 600, color: C.text }}>{title}</h2>
+        <button onClick={onClose} style={{ background: C.bg, border: "none", borderRadius: 8, cursor: "pointer", padding: 6, display: "flex" }}><X size={16} color={C.muted} /></button>
       </div>
       {children}
     </div>
   </div>
 );
 const Badge = ({ color, children }) => (
-  <span style={{ display: "inline-flex", alignItems: "center", padding: "2px 10px", borderRadius: 99, fontSize: 12, fontWeight: 700, background: color + "22", color }}>{children}</span>
+  <span style={{ display: "inline-flex", alignItems: "center", padding: "3px 10px", borderRadius: 99, fontSize: 11.5, fontWeight: 600, background: color + "16", color }}>{children}</span>
 );
 const StatCard = ({ icon: Icon, label, value, color, sub }) => (
-  <div style={{ background: "#fff", borderRadius: 14, padding: "18px 22px", boxShadow: "0 1px 4px rgba(0,0,0,.06)", display: "flex", alignItems: "center", gap: 14 }}>
-    <div style={{ background: color + "1a", borderRadius: 12, padding: 12, display: "flex" }}><Icon size={22} color={color} /></div>
-    <div>
-      <div style={{ fontSize: 24, fontWeight: 800, color: C.text, lineHeight: 1.2 }}>{value}</div>
-      <div style={{ fontSize: 13, color: C.muted, marginTop: 2 }}>{label}</div>
-      {sub && <div style={{ fontSize: 12, color, marginTop: 2, fontWeight: 600 }}>{sub}</div>}
-    </div>
+  <div style={{ background: "#fff", borderRadius: 12, padding: "16px 18px", border: `1px solid ${C.border}` }}>
+    <div style={{ width: 34, height: 34, background: color + "16", borderRadius: 9, display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 12 }}><Icon size={17} color={color} /></div>
+    <div style={{ fontSize: 21, fontWeight: 600, color: C.text, lineHeight: 1.25 }}>{value}</div>
+    <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>{label}</div>
+    {sub && <div style={{ fontSize: 11.5, color, marginTop: 5, fontWeight: 600 }}>{sub}</div>}
   </div>
 );
-const Card = ({ title, children, action }) => (
-  <div style={{ background: "#fff", borderRadius: 14, padding: 22, boxShadow: "0 1px 4px rgba(0,0,0,.06)", marginBottom: 20 }}>
+const Card = ({ title, children, action, icon: Icon, iconColor }) => (
+  <div style={{ background: "#fff", borderRadius: 12, padding: 20, border: `1px solid ${C.border}`, marginBottom: 18 }}>
     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18, flexWrap: "wrap", gap: 10 }}>
-      <h2 style={{ margin: 0, fontSize: 16, fontWeight: 800, color: C.text }}>{title}</h2>
+      <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+        {Icon && <div style={{ width: 28, height: 28, background: (iconColor || C.blue) + "16", borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><Icon size={15} color={iconColor || C.blue} /></div>}
+        <h2 style={{ margin: 0, fontSize: 15, fontWeight: 600, color: C.text }}>{title}</h2>
+      </div>
       {action}
     </div>
     {children}
   </div>
 );
-const Th = ({ children }) => <th style={{ padding: "10px 12px", textAlign: "left", fontWeight: 700, color: C.muted, fontSize: 12, borderBottom: `2px solid ${C.border}`, whiteSpace: "nowrap" }}>{children}</th>;
-const Td = ({ children, style: s }) => <td style={{ padding: "11px 12px", ...s }}>{children}</td>;
+const Th = ({ children }) => <th style={{ padding: "9px 12px", textAlign: "left", fontWeight: 600, color: C.muted, fontSize: 11.5, borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap", textTransform: "uppercase", letterSpacing: 0.3 }}>{children}</th>;
+const Td = ({ children, style: s }) => <td style={{ padding: "12px", ...s }}>{children}</td>;
 const ActionBtn = ({ icon: Icon, color, onClick, title }) => (
-  <button title={title} onClick={onClick} style={{ background: color + "18", border: "none", borderRadius: 6, padding: "5px 8px", cursor: "pointer", color, display: "inline-flex" }}><Icon size={14} /></button>
+  <button title={title} onClick={onClick} style={{ background: color + "14", border: "none", borderRadius: 7, padding: "6px 9px", cursor: "pointer", color, display: "inline-flex" }}><Icon size={14} /></button>
 );
 
 // ═══════════════════════════════ DASHBOARD ═══════════════════════════════
@@ -308,9 +309,19 @@ function Dashboard({ data }) {
   const activeClasses = data.classes.filter((c) => c.status === "active");
   const uniqueStudents = [...new Set(activeRegs.map((r) => r.studentId))];
 
+  const nowHM = now.toTimeString().slice(0, 5);
+  let markedNext = false;
   const todaySessions = activeClasses
     .flatMap((cls) => (cls.schedule || []).filter((s) => s.day === todayCode).map((slot) => ({ cls, slot })))
-    .sort((a, b) => a.slot.startTime.localeCompare(b.slot.startTime));
+    .sort((a, b) => a.slot.startTime.localeCompare(b.slot.startTime))
+    .map((s) => {
+      let status;
+      if (nowHM >= s.slot.startTime && nowHM <= s.slot.endTime) status = "ongoing";
+      else if (nowHM > s.slot.endTime) status = "done";
+      else { status = markedNext ? "upcoming" : "next"; markedNext = true; }
+      return { ...s, status };
+    });
+  const SESSION_STATUS = { ongoing: { label: "Đang diễn ra", bg: C.green + "18", fg: "#0F6E56" }, next: { label: "Sắp diễn ra", bg: C.amber + "1c", fg: "#854F0B" }, upcoming: { label: "Chưa bắt đầu", bg: C.bg, fg: C.muted }, done: { label: "Đã xong", bg: C.bg, fg: C.muted } };
 
   const revenueData = Array.from({ length: 6 }, (_, i) => {
     const d = new Date(cy, cm - 1 - i, 1);
@@ -324,11 +335,26 @@ function Dashboard({ data }) {
     return acc;
   }, {});
 
+  // Tình hình thu học phí tháng này, theo từng học sinh
+  let paidFull = 0, owing = 0, notCreated = 0;
+  uniqueStudents.forEach((sid) => {
+    const regs = activeRegs.filter((r) => r.studentId === sid);
+    const pays = regs.map((r) => mPays.find((p) => p.studentId === sid && p.classId === r.classId));
+    if (pays.every((p) => !p)) notCreated++;
+    else if (pays.every((p) => p && p.status === "paid")) paidFull++;
+    else owing++;
+  });
+  const donutData = [
+    { name: "Đã thu đủ", value: paidFull, color: C.green },
+    { name: "Còn nợ", value: owing, color: C.red },
+    { name: "Chưa tạo bản ghi", value: notCreated, color: C.border === "#EEF1F5" ? "#CBD5E1" : C.border },
+  ].filter((d) => d.value > 0);
+
   const riskList = computeDropoutRisk(data);
 
   return (
     <div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(190px,1fr))", gap: 14, marginBottom: 22 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(190px,1fr))", gap: 14, marginBottom: 18 }}>
         <StatCard icon={BookOpen} label="Lớp đang hoạt động" value={activeClasses.length} color={C.blue} />
         <StatCard icon={Users} label="Học sinh đang học" value={uniqueStudents.length} color={C.green} />
         <StatCard icon={User} label="Giáo viên" value={data.teachers.length} color={C.purple} />
@@ -336,12 +362,12 @@ function Dashboard({ data }) {
           sub={unpaidPays.length ? `⚠ Còn ${unpaidPays.length} khoản chưa thu` : "✓ Thu đầy đủ rồi!"} />
       </div>
       {riskList.length > 0 && (
-        <Card title="🚨 Học sinh có nguy cơ nghỉ học">
+        <Card title="Học sinh có nguy cơ nghỉ học" icon={AlertCircle} iconColor={C.red}>
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {riskList.map((r) => (
               <div key={r.studentId} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 14px", background: C.red + "0d", borderRadius: 10, flexWrap: "wrap", gap: 6 }}>
                 <div>
-                  <span style={{ fontWeight: 700, color: C.text, fontSize: 14 }}>{r.student.name}</span>
+                  <span style={{ fontWeight: 600, color: C.text, fontSize: 14 }}>{r.student.name}</span>
                   <span style={{ color: C.muted, fontSize: 12, marginLeft: 8 }}>{r.student.parentPhone}</span>
                 </div>
                 <div style={{ fontSize: 12.5, color: C.red }}>{r.reasons.join(" · ")}</div>
@@ -350,46 +376,63 @@ function Dashboard({ data }) {
           </div>
         </Card>
       )}
-      <Card title={`🗓 Thời khóa biểu hôm nay — ${todayCode}, ${new Date().toLocaleDateString("vi-VN")}`} action={
-        <Btn color={C.green} style={{ padding: "6px 12px", fontSize: 13 }} onClick={() => exportDashboardTab(data, todaySessions.map(({ cls, slot }) => ({ cls, slot, teacherName: data.teachers.find((t) => t.id === cls.teacherId)?.name || "", enrolled: data.registrations.filter((r) => r.classId === cls.id && r.status === "active").length })))}>
-          <FileSpreadsheet size={13} />Xuất Excel
-        </Btn>
-      }>
-        {todaySessions.length === 0
-          ? <div style={{ textAlign: "center", padding: "20px 0", color: C.muted, fontSize: 13 }}>Hôm nay không có lớp nào theo lịch cố định.</div>
-          : <div style={{ overflowX: "auto" }}>
-              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
-                <thead><tr style={{ background: C.bg }}>{["Giờ học", "Lớp", "Môn", "Giáo viên", "Phòng", "Sĩ số"].map((h) => <Th key={h}>{h}</Th>)}</tr></thead>
-                <tbody>
-                  {todaySessions.map(({ cls, slot }, i) => {
-                    const t = data.teachers.find((x) => x.id === cls.teacherId);
-                    const enrolled = data.registrations.filter((r) => r.classId === cls.id && r.status === "active").length;
-                    return (
-                      <tr key={i} style={{ borderBottom: `1px solid ${C.border}` }}>
-                        <Td style={{ fontWeight: 700, color: C.navy }}>{slot.startTime}–{slot.endTime}</Td>
-                        <Td style={{ fontWeight: 700, color: C.text }}>{cls.name}</Td>
-                        <Td><Badge color={C.blue}>{cls.subject}</Badge></Td>
-                        <Td style={{ color: C.text }}>{t?.name || <span style={{ color: C.red }}>Chưa phân công</span>}</Td>
-                        <Td><Badge color={C.purple}>{slot.room}</Badge></Td>
-                        <Td style={{ color: C.muted }}>{enrolled}/{cls.maxStudents}</Td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>}
-      </Card>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 320px", gap: 18, marginBottom: 18, marginTop: 20 }}>
-        <Card title="📈 Doanh thu 6 tháng gần nhất">
-          <ResponsiveContainer width="100%" height={190}>
+      <div style={{ display: "grid", gridTemplateColumns: "1.5fr 1fr", gap: 18, marginBottom: 4 }}>
+        <Card title="Doanh thu 6 tháng gần nhất" icon={TrendingUp} iconColor={C.blue}>
+          <ResponsiveContainer width="100%" height={180}>
             <BarChart data={revenueData}><CartesianGrid strokeDasharray="3 3" stroke="#f0f4f8" />
               <XAxis dataKey="month" tick={{ fontSize: 12 }} /><YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => (v / 1000000).toFixed(1) + "M"} />
-              <Tooltip formatter={(v) => fmtMoney(v)} labelStyle={{ fontWeight: 700 }} />
+              <Tooltip formatter={(v) => fmtMoney(v)} labelStyle={{ fontWeight: 600 }} />
               <Bar dataKey="revenue" fill={C.blue} radius={[6, 6, 0, 0]} name="Doanh thu" />
             </BarChart>
           </ResponsiveContainer>
         </Card>
-        <Card title={`⚠ Chưa thu T${cm}/${cy}`}>
+        <Card title={`Tình hình thu T${cm}`} icon={PieIcon} iconColor={C.green}>
+          {donutData.length === 0 ? <div style={{ textAlign: "center", padding: "28px 0", color: C.muted, fontSize: 13 }}>Chưa có dữ liệu</div> : <>
+            <ResponsiveContainer width="100%" height={120}>
+              <PieChart>
+                <Pie data={donutData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={34} outerRadius={54} paddingAngle={2}>
+                  {donutData.map((d, i) => <Cell key={i} fill={d.color} />)}
+                </Pie>
+                <Tooltip />
+              </PieChart>
+            </ResponsiveContainer>
+            <div style={{ display: "flex", flexDirection: "column", gap: 5, marginTop: 6 }}>
+              {donutData.map((d, i) => (
+                <div key={i} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5 }}>
+                  <span style={{ width: 7, height: 7, borderRadius: 99, background: d.color, flexShrink: 0 }} />
+                  <span style={{ color: C.text }}>{d.name}</span><span style={{ color: C.muted, marginLeft: "auto" }}>{d.value}</span>
+                </div>
+              ))}
+            </div>
+          </>}
+        </Card>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1.5fr 1fr", gap: 18, marginBottom: 4 }}>
+        <Card title={`Thời khóa biểu hôm nay · ${todayCode}, ${new Date().toLocaleDateString("vi-VN")}`} icon={CalendarDays} iconColor={C.navyLight} action={
+          <Btn color={C.green} style={{ padding: "6px 12px", fontSize: 13 }} onClick={() => exportDashboardTab(data, todaySessions.map(({ cls, slot }) => ({ cls, slot, teacherName: data.teachers.find((t) => t.id === cls.teacherId)?.name || "", enrolled: data.registrations.filter((r) => r.classId === cls.id && r.status === "active").length })))}>
+            <FileSpreadsheet size={13} />Xuất Excel
+          </Btn>
+        }>
+          {todaySessions.length === 0
+            ? <div style={{ textAlign: "center", padding: "20px 0", color: C.muted, fontSize: 13 }}>Hôm nay không có lớp nào theo lịch cố định.</div>
+            : <div style={{ display: "flex", flexDirection: "column" }}>
+                {todaySessions.map(({ cls, slot, status }, i) => {
+                  const t = data.teachers.find((x) => x.id === cls.teacherId);
+                  const st = SESSION_STATUS[status];
+                  return (
+                    <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 0", borderBottom: i < todaySessions.length - 1 ? `1px solid ${C.border}` : "none" }}>
+                      <div style={{ fontSize: 12, color: C.muted, width: 92, flexShrink: 0 }}>{slot.startTime}–{slot.endTime}</div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontWeight: 600, fontSize: 13.5, color: C.text }}>{cls.name}</div>
+                        <div style={{ fontSize: 11.5, color: C.muted }}>{t?.name || "Chưa phân công"} · {slot.room}</div>
+                      </div>
+                      <span style={{ background: st.bg, color: st.fg, fontSize: 10.5, fontWeight: 600, padding: "3px 9px", borderRadius: 99, flexShrink: 0 }}>{st.label}</span>
+                    </div>
+                  );
+                })}
+              </div>}
+        </Card>
+        <Card title={`Chưa thu T${cm}/${cy}`} icon={AlertCircle} iconColor={C.red}>
           {Object.values(unpaidGroup).length === 0
             ? <div style={{ textAlign: "center", padding: "28px 0", color: C.muted }}>
                 <CheckCircle size={32} color={C.green} style={{ margin: "0 auto 8px", display: "block" }} />
@@ -406,7 +449,7 @@ function Dashboard({ data }) {
               </div>}
         </Card>
       </div>
-      <Card title="🏫 Tình trạng lớp học">
+      <Card title="Tình trạng lớp học" icon={BookOpen} iconColor={C.purple}>
         <div style={{ overflowX: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
             <thead><tr style={{ background: C.bg }}>
@@ -419,7 +462,7 @@ function Dashboard({ data }) {
                 const pct = Math.round((enrolled / cls.maxStudents) * 100);
                 return (
                   <tr key={cls.id} style={{ borderBottom: `1px solid ${C.border}` }}>
-                    <Td style={{ fontWeight: 700, color: C.text }}>{cls.name}</Td>
+                    <Td style={{ fontWeight: 600, color: C.text }}>{cls.name}</Td>
                     <Td><Badge color={C.blue}>{cls.subject}</Badge></Td>
                     <Td style={{ color: C.text }}>{t?.name || <span style={{ color: C.red }}>Chưa phân công</span>}</Td>
                     <Td style={{ color: C.muted, fontSize: 12 }}>{scheduleSummary(cls.schedule)}</Td>
@@ -530,7 +573,7 @@ function ClassesView({ data, api, isAdmin }) {
 
   return (
     <div>
-      <Card title={viewMode === "list" ? `Danh sách lớp học (${filtered.length})` : "🗓 Lịch phòng học"} action={
+      <Card title={viewMode === "list" ? `Danh sách lớp học (${filtered.length})` : "Lịch phòng học"} icon={viewMode === "list" ? BookOpen : CalendarDays} iconColor={C.blue} action={
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
           <div style={{ display: "flex", background: C.bg, borderRadius: 8, padding: 3 }}>
             <button onClick={() => setViewMode("list")} style={{ padding: "6px 12px", borderRadius: 6, border: "none", background: viewMode === "list" ? "#fff" : "transparent", boxShadow: viewMode === "list" ? "0 1px 3px rgba(0,0,0,.1)" : "none", color: viewMode === "list" ? C.navy : C.muted, fontWeight: 600, fontSize: 13, cursor: "pointer" }}>📋 Danh sách</button>
@@ -819,7 +862,7 @@ function StudentsView({ data, api, isAdmin }) {
   };
   return (
     <div>
-      <Card title={`Danh sách học sinh (${filtered.length})`} action={
+      <Card title={`Danh sách học sinh (${filtered.length})`} icon={Users} iconColor={C.green} action={
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
           <div style={{ position: "relative" }}><Search size={15} style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: C.muted }} />
             <input placeholder="Tìm học sinh..." value={search} onChange={(e) => setSearch(e.target.value)} style={{ padding: "8px 12px 8px 32px", borderRadius: 8, border: `1.5px solid ${C.border}`, fontSize: 14, width: 220, outline: "none" }} /></div>
@@ -1008,7 +1051,7 @@ function TeachersView({ data, api, isAdmin }) {
   };
   return (
     <div>
-      <Card title={`Đội ngũ giáo viên (${filtered.length})`} action={
+      <Card title={`Đội ngũ giáo viên (${filtered.length})`} icon={User} iconColor={C.purple} action={
         <div style={{ display: "flex", gap: 10 }}>
           <div style={{ position: "relative" }}><Search size={15} style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: C.muted }} />
             <input placeholder="Tìm giáo viên..." value={search} onChange={(e) => setSearch(e.target.value)} style={{ padding: "8px 12px 8px 32px", borderRadius: 8, border: `1.5px solid ${C.border}`, fontSize: 14, width: 200, outline: "none" }} /></div>
@@ -1176,7 +1219,7 @@ function AttendanceView({ data, api }) {
 
   return (
     <div>
-      <Card title="📋 Điểm danh theo buổi học" action={
+      <Card title="Điểm danh theo buổi học" icon={ClipboardCheck} iconColor={C.navyLight} action={
         <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
           <input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={{ padding: "7px 12px", borderRadius: 8, border: `1.5px solid ${C.border}`, fontSize: 14, outline: "none" }} />
           <select value={classId} onChange={(e) => setClassId(e.target.value)} style={{ padding: "7px 12px", borderRadius: 8, border: `1.5px solid ${C.border}`, fontSize: 14, outline: "none", minWidth: 200 }}>
@@ -1379,7 +1422,7 @@ function PaymentsView({ data, api }) {
         <StatCard icon={CheckCircle} label="Đã thu" value={fmtMoney(totalPaid)} color={C.green} />
         <StatCard icon={AlertCircle} label="Chưa thu" value={fmtMoney(totalUnpaid)} color={C.red} />
       </div>
-      <Card title={viewMode === "monthly" ? "💰 Quản lý học phí" : "📕 Công nợ tổng hợp — mọi tháng"} action={
+      <Card title={viewMode === "monthly" ? "Quản lý học phí" : "Công nợ tổng hợp — mọi tháng"} icon={viewMode === "monthly" ? DollarSign : AlertCircle} iconColor={viewMode === "monthly" ? C.amber : C.red} action={
         <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
           <div style={{ display: "flex", background: C.bg, borderRadius: 8, padding: 3 }}>
             <button onClick={() => setViewMode("monthly")} style={{ padding: "6px 12px", borderRadius: 6, border: "none", background: viewMode === "monthly" ? "#fff" : "transparent", boxShadow: viewMode === "monthly" ? "0 1px 3px rgba(0,0,0,.1)" : "none", color: viewMode === "monthly" ? C.navy : C.muted, fontWeight: 600, fontSize: 13, cursor: "pointer" }}>Theo tháng</button>
@@ -1522,7 +1565,7 @@ function PayrollView({ data, api }) {
         <StatCard icon={CheckCircle} label="Đã trả" value={fmtMoney(totalPaid)} color={C.green} />
         <StatCard icon={AlertCircle} label="Chưa trả" value={fmtMoney(totalUnpaid)} color={C.red} />
       </div>
-      <Card title="👨‍🏫 Lương giáo viên theo buổi dạy" action={
+      <Card title="Lương giáo viên theo buổi dạy" icon={Wallet} iconColor={C.amber} action={
         <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
           <select value={month} onChange={(e) => setMonth(+e.target.value)} style={{ padding: "7px 12px", borderRadius: 8, border: `1.5px solid ${C.border}`, fontSize: 14, outline: "none" }}>
             {Array.from({ length: 12 }, (_, i) => <option key={i + 1} value={i + 1}>Tháng {i + 1}</option>)}
@@ -1589,7 +1632,7 @@ function ActivityLogView({ data }) {
 
   return (
     <div>
-      <Card title={`📜 Nhật ký hoạt động (${filtered.length})`} action={
+      <Card title={`Nhật ký hoạt động (${filtered.length})`} icon={History} iconColor={C.navyLight} action={
         <div style={{ display: "flex", gap: 8 }}>
           <select value={entityFilter} onChange={(e) => setEntityFilter(e.target.value)} style={{ padding: "7px 12px", borderRadius: 8, border: `1.5px solid ${C.border}`, fontSize: 14, outline: "none" }}>
             <option value="">Tất cả loại</option>
@@ -1650,18 +1693,18 @@ function ReportsView({ data }) {
         <Btn color={C.green} onClick={() => exportSummaryReport({ revenueData, gradeData, occData })}><FileSpreadsheet size={15} />Xuất báo cáo Excel</Btn>
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "3fr 2fr", gap: 18, marginBottom: 18 }}>
-        <Card title="📈 Doanh thu 6 tháng">
+        <Card title="Doanh thu 6 tháng" icon={TrendingUp} iconColor={C.blue}>
           <ResponsiveContainer width="100%" height={210}><BarChart data={revenueData}><CartesianGrid strokeDasharray="3 3" stroke="#f0f4f8" /><XAxis dataKey="month" tick={{ fontSize: 12 }} /><YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => (v / 1000000).toFixed(1) + "M"} /><Tooltip formatter={(v) => fmtMoney(v)} /><Bar dataKey="revenue" fill={C.blue} radius={[5, 5, 0, 0]} name="Doanh thu" /></BarChart></ResponsiveContainer>
         </Card>
-        <Card title="🎯 Phân bổ môn học">
+        <Card title="Phân bổ môn học" icon={PieIcon} iconColor={C.purple}>
           <ResponsiveContainer width="100%" height={210}><PieChart><Pie data={subjectData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={75} label={({ name, value }) => `${name}:${value}`} labelLine={false} fontSize={11}>{subjectData.map((_, i) => <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}</Pie><Tooltip /></PieChart></ResponsiveContainer>
         </Card>
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
-        <Card title="👥 Học sinh theo khối">
+        <Card title="Học sinh theo khối" icon={Users} iconColor={C.green}>
           <ResponsiveContainer width="100%" height={190}><BarChart data={gradeData} layout="vertical"><CartesianGrid strokeDasharray="3 3" stroke="#f0f4f8" /><XAxis type="number" tick={{ fontSize: 11 }} /><YAxis dataKey="grade" type="category" tick={{ fontSize: 11 }} width={52} /><Tooltip /><Bar dataKey="count" fill={C.green} radius={[0, 5, 5, 0]} name="Học sinh" /></BarChart></ResponsiveContainer>
         </Card>
-        <Card title="📊 Tỷ lệ lấp đầy lớp">
+        <Card title="Tỷ lệ lấp đầy lớp" icon={BarChart2} iconColor={C.amber}>
           <div style={{ maxHeight: 190, overflowY: "auto" }}>
             {occData.map((c, i) => { const pct = Math.round((c.enrolled / c.max) * 100); return (
               <div key={i} style={{ marginBottom: 12 }}>
@@ -1682,17 +1725,24 @@ function ReportsView({ data }) {
 }
 
 // ═══════════════════════════════ MAIN APP ═══════════════════════════════
-const NAV = [
-  { id: "dashboard", icon: Home, label: "Tổng quan" },
-  { id: "classes", icon: BookOpen, label: "Lớp học" },
-  { id: "students", icon: Users, label: "Học sinh" },
-  { id: "teachers", icon: User, label: "Giáo viên" },
-  { id: "attendance", icon: ClipboardCheck, label: "Điểm danh" },
-  { id: "payments", icon: DollarSign, label: "Học phí" },
-  { id: "payroll", icon: Wallet, label: "Lương GV" },
-  { id: "reports", icon: BarChart2, label: "Báo cáo" },
-  { id: "activitylog", icon: History, label: "Nhật ký" },
+const NAV_GROUPS = [
+  { label: "Chính", items: [{ id: "dashboard", icon: Home, label: "Tổng quan" }] },
+  { label: "Quản lý", items: [
+    { id: "classes", icon: BookOpen, label: "Lớp học" },
+    { id: "students", icon: Users, label: "Học sinh" },
+    { id: "teachers", icon: User, label: "Giáo viên" },
+    { id: "attendance", icon: ClipboardCheck, label: "Điểm danh" },
+  ] },
+  { label: "Tài chính", items: [
+    { id: "payments", icon: DollarSign, label: "Học phí" },
+    { id: "payroll", icon: Wallet, label: "Lương GV" },
+  ] },
+  { label: "Báo cáo", items: [
+    { id: "reports", icon: BarChart2, label: "Báo cáo" },
+    { id: "activitylog", icon: History, label: "Nhật ký" },
+  ] },
 ];
+const NAV = NAV_GROUPS.flatMap((g) => g.items);
 
 function AuthenticatedApp({ profile, onSignOut }) {
   const isAdmin = profile?.role === "admin";
@@ -1867,57 +1917,62 @@ function AuthenticatedApp({ profile, onSignOut }) {
   return (
     <div style={{ display: "flex", height: "100vh", overflow: "hidden", background: C.bg, fontFamily: "system-ui,-apple-system,sans-serif" }}>
       {/* ── Sidebar ── */}
-      <div style={{ width: 215, background: C.navy, display: "flex", flexDirection: "column", flexShrink: 0 }}>
-        <div style={{ padding: "22px 18px 16px", borderBottom: "1px solid rgba(255,255,255,.1)" }}>
+      <div style={{ width: 222, background: C.navy, display: "flex", flexDirection: "column", flexShrink: 0 }}>
+        <div style={{ padding: "20px 18px 14px", borderBottom: "1px solid rgba(255,255,255,.08)" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <div style={{ background: "#fff", borderRadius: 10, padding: 6, display: "flex", boxShadow: "0 1px 4px rgba(0,0,0,.15)" }}>
-              <img src={leafIcon} alt="Foster" style={{ width: 24, height: 24, objectFit: "contain", borderRadius: 4 }} />
+            <div style={{ background: "#fff", borderRadius: 9, padding: 6, display: "flex" }}>
+              <img src={leafIcon} alt="Foster" style={{ width: 22, height: 22, objectFit: "contain", borderRadius: 4 }} />
             </div>
-            <div><div style={{ color: "#fff", fontWeight: 800, fontSize: 19, letterSpacing: -0.5 }}>FOSTER</div>
-            <div style={{ color: "rgba(255,255,255,.45)", fontSize: 10.5, lineHeight: 1.3 }}>Nuôi dưỡng ước mơ, kiến tạo tương lai</div></div>
+            <div><div style={{ color: "#fff", fontWeight: 600, fontSize: 17, letterSpacing: -0.2 }}>FOSTER</div>
+            <div style={{ color: "rgba(255,255,255,.4)", fontSize: 10, lineHeight: 1.3 }}>Nuôi dưỡng ước mơ</div></div>
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 5, marginTop: 10, fontSize: 11, color: online ? "#6EE7B7" : "rgba(255,255,255,.4)" }}>
-            {online ? <Wifi size={12} /> : <WifiOff size={12} />}{online ? "Đồng bộ trực tuyến" : "Đang kết nối..."}
+          <div style={{ display: "flex", alignItems: "center", gap: 5, marginTop: 10, fontSize: 10.5, color: online ? "#6EE7B7" : "rgba(255,255,255,.4)" }}>
+            {online ? <Wifi size={11} /> : <WifiOff size={11} />}{online ? "Đồng bộ trực tuyến" : "Đang kết nối..."}
           </div>
         </div>
-        <nav style={{ padding: "10px 8px", flex: 1 }}>
-          {NAV.map(({ id, icon: Icon, label }) => (
-            <button key={id} onClick={() => setTab(id)} style={{ width: "100%", display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", borderRadius: 10, border: "none", cursor: "pointer", marginBottom: 2, textAlign: "left", background: tab === id ? C.amber : "transparent", color: tab === id ? "#fff" : "rgba(255,255,255,.6)", fontWeight: tab === id ? 700 : 400, fontSize: 14, transition: "all .15s" }}>
-              <Icon size={17} />{label}
-            </button>
+        <nav style={{ padding: "12px 10px", flex: 1, overflowY: "auto" }}>
+          {NAV_GROUPS.map((group) => (
+            <div key={group.label} style={{ marginBottom: 14 }}>
+              <div style={{ color: "rgba(255,255,255,.32)", fontSize: 10, fontWeight: 600, letterSpacing: 0.6, textTransform: "uppercase", padding: "0 10px", marginBottom: 5 }}>{group.label}</div>
+              {group.items.map(({ id, icon: Icon, label }) => (
+                <button key={id} onClick={() => setTab(id)} style={{ width: "100%", display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", borderRadius: 8, border: "none", cursor: "pointer", marginBottom: 1, textAlign: "left", background: tab === id ? C.amber : "transparent", color: tab === id ? "#3E2A04" : "rgba(255,255,255,.75)", fontWeight: tab === id ? 600 : 400, fontSize: 13.5 }}>
+                  <Icon size={16} />{label}
+                </button>
+              ))}
+            </div>
           ))}
         </nav>
-        <div style={{ padding: "14px 16px", borderTop: "1px solid rgba(255,255,255,.1)" }}>
-          <div style={{ fontSize: 11, color: "rgba(255,255,255,.35)", marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.5 }}>Dữ liệu</div>
-          <button onClick={() => exportFullWorkbook(data)} style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "8px 0", borderRadius: 8, border: "1px solid rgba(255,255,255,.15)", cursor: "pointer", background: "rgba(255,255,255,.08)", color: "rgba(255,255,255,.85)", fontSize: 12, fontWeight: 600, marginBottom: 6 }}>
+        <div style={{ padding: "14px 16px", borderTop: "1px solid rgba(255,255,255,.08)" }}>
+          <div style={{ fontSize: 10.5, color: "rgba(255,255,255,.32)", marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.5, fontWeight: 600 }}>Dữ liệu</div>
+          <button onClick={() => exportFullWorkbook(data)} style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "8px 0", borderRadius: 8, border: "1px solid rgba(255,255,255,.12)", cursor: "pointer", background: "rgba(255,255,255,.06)", color: "rgba(255,255,255,.85)", fontSize: 11.5, fontWeight: 600, marginBottom: 6 }}>
             <FileSpreadsheet size={13} />Xuất Excel toàn bộ
           </button>
           <div style={{ display: "flex", gap: 6, marginBottom: 6 }}>
-            <button onClick={exportJSON} title="Tải file backup JSON về máy" style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 5, padding: "8px 0", borderRadius: 8, border: "1px solid rgba(255,255,255,.15)", cursor: "pointer", background: "rgba(255,255,255,.08)", color: "rgba(255,255,255,.8)", fontSize: 12, fontWeight: 600 }}>
+            <button onClick={exportJSON} title="Tải file backup JSON về máy" style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 5, padding: "8px 0", borderRadius: 8, border: "1px solid rgba(255,255,255,.12)", cursor: "pointer", background: "rgba(255,255,255,.06)", color: "rgba(255,255,255,.8)", fontSize: 11.5, fontWeight: 600 }}>
               <Download size={13} />Export
             </button>
             {isAdmin && (
-              <button onClick={importJSON} title="Khôi phục từ file backup JSON" style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 5, padding: "8px 0", borderRadius: 8, border: "1px solid rgba(255,255,255,.15)", cursor: "pointer", background: "rgba(255,255,255,.08)", color: "rgba(255,255,255,.8)", fontSize: 12, fontWeight: 600 }}>
+              <button onClick={importJSON} title="Khôi phục từ file backup JSON" style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 5, padding: "8px 0", borderRadius: 8, border: "1px solid rgba(255,255,255,.12)", cursor: "pointer", background: "rgba(255,255,255,.06)", color: "rgba(255,255,255,.8)", fontSize: 11.5, fontWeight: 600 }}>
                 <Upload size={13} />Import
               </button>
             )}
           </div>
           {isAdmin && (
-            <button onClick={resetToSample} style={{ width: "100%", background: "none", border: "none", cursor: "pointer", color: "rgba(255,255,255,.25)", fontSize: 11, textAlign: "left", padding: "4px 0", marginBottom: 10 }}>↺ Reset dữ liệu mẫu</button>
+            <button onClick={resetToSample} style={{ width: "100%", background: "none", border: "none", cursor: "pointer", color: "rgba(255,255,255,.25)", fontSize: 10.5, textAlign: "left", padding: "4px 0", marginBottom: 10 }}>↺ Reset dữ liệu mẫu</button>
           )}
           {AUTH_ENABLED && (
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", paddingTop: 10, borderTop: "1px solid rgba(255,255,255,.1)" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", paddingTop: 10, borderTop: "1px solid rgba(255,255,255,.08)" }}>
               <div style={{ overflow: "hidden" }}>
-                <div style={{ fontSize: 12, fontWeight: 700, color: "#fff", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{profile?.email}</div>
-                <div style={{ fontSize: 10.5, color: isAdmin ? "#F5A623" : "rgba(255,255,255,.5)" }}>{isAdmin ? "Admin" : "Cán bộ"}</div>
+                <div style={{ fontSize: 11.5, fontWeight: 600, color: "#fff", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{profile?.email}</div>
+                <div style={{ fontSize: 10, color: isAdmin ? "#F5A623" : "rgba(255,255,255,.5)" }}>{isAdmin ? "Admin" : "Cán bộ"}</div>
               </div>
-              <button onClick={onSignOut} title="Đăng xuất" style={{ background: "rgba(255,255,255,.08)", border: "none", borderRadius: 8, padding: 7, cursor: "pointer", display: "flex", flexShrink: 0 }}>
+              <button onClick={onSignOut} title="Đăng xuất" style={{ background: "rgba(255,255,255,.06)", border: "none", borderRadius: 8, padding: 7, cursor: "pointer", display: "flex", flexShrink: 0 }}>
                 <LogOut size={14} color="rgba(255,255,255,.7)" />
               </button>
             </div>
           )}
-          <div style={{ paddingTop: 10, borderTop: "1px solid rgba(255,255,255,.1)" }}>
-            <button onClick={lockSimpleAuth} style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "7px 0", borderRadius: 8, border: "none", cursor: "pointer", background: "transparent", color: "rgba(255,255,255,.4)", fontSize: 11.5, fontWeight: 600 }}>
+          <div style={{ paddingTop: 10, borderTop: "1px solid rgba(255,255,255,.08)" }}>
+            <button onClick={lockSimpleAuth} style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "7px 0", borderRadius: 8, border: "none", cursor: "pointer", background: "transparent", color: "rgba(255,255,255,.4)", fontSize: 11, fontWeight: 600 }}>
               <LogOut size={12} />Khóa lại
             </button>
           </div>
@@ -1925,7 +1980,7 @@ function AuthenticatedApp({ profile, onSignOut }) {
       </div>
       {/* ── Toast ── */}
       {toast && (
-        <div style={{ position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)", background: toast.color, color: "#fff", padding: "12px 24px", borderRadius: 99, fontSize: 14, fontWeight: 700, zIndex: 999, boxShadow: "0 4px 20px rgba(0,0,0,.2)", whiteSpace: "nowrap" }}>
+        <div style={{ position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)", background: toast.color, color: "#fff", padding: "12px 24px", borderRadius: 99, fontSize: 14, fontWeight: 600, zIndex: 999, boxShadow: "0 8px 24px rgba(0,0,0,.18)", whiteSpace: "nowrap" }}>
           {toast.msg}
         </div>
       )}
@@ -1933,15 +1988,20 @@ function AuthenticatedApp({ profile, onSignOut }) {
       <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
         <div style={{ background: "#fff", padding: "14px 26px", borderBottom: `1px solid ${C.border}`, display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
           <div>
-            <h1 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: C.text }}>{curTab?.label}</h1>
+            <h1 style={{ margin: 0, fontSize: 19, fontWeight: 600, color: C.text }}>{curTab?.label}</h1>
             <div style={{ fontSize: 12, color: C.muted, marginTop: 1 }}>{new Date().toLocaleDateString("vi-VN", { weekday: "long", year: "numeric", month: "long", day: "numeric" })}</div>
           </div>
-          <div style={{ display: "flex", gap: 10, fontSize: 13, color: C.muted }}>
-            <span>📚 {data.classes.filter((c) => c.status === "active").length} lớp</span>
-            <span>·</span>
-            <span>👥 {data.students.length} học sinh</span>
-            <span>·</span>
-            <span>👨‍🏫 {data.teachers.length} GV</span>
+          <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+            <div style={{ display: "flex", gap: 8, fontSize: 12.5, color: C.muted }}>
+              <span style={{ display: "flex", alignItems: "center", gap: 4 }}><BookOpen size={13} color={C.blue} />{data.classes.filter((c) => c.status === "active").length} lớp</span>
+              <span style={{ color: C.border }}>·</span>
+              <span style={{ display: "flex", alignItems: "center", gap: 4 }}><Users size={13} color={C.green} />{data.students.length} học sinh</span>
+              <span style={{ color: C.border }}>·</span>
+              <span style={{ display: "flex", alignItems: "center", gap: 4 }}><User size={13} color={C.purple} />{data.teachers.length} GV</span>
+            </div>
+            <div style={{ width: 32, height: 32, borderRadius: 9, background: C.bg, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+              <Bell size={15} color={C.muted} />
+            </div>
           </div>
         </div>
         <div style={{ flex: 1, overflowY: "auto", padding: 22 }}>
