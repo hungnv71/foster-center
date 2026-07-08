@@ -59,7 +59,7 @@ function sessionsTaughtByTeacher(teacherId, classes, attendance, month, year) {
   attendance.forEach((a) => {
     if (!myClassIds.has(a.classId)) return;
     const [y, m] = a.date.split("-").map(Number);
-    if (y === year && m === month) sessions.add(`${a.classId}|${a.date}`);
+    if (y === year && m === month) sessions.add(`${a.classId}|${a.date}|${a.overrideId || ""}`);
   });
   return sessions.size;
 }
@@ -90,6 +90,16 @@ const scheduleSummary = (schedule) => (schedule || []).map((s) => `${s.day} ${s.
 function findMakeupConflicts(classId, teacherId, makeupDate, startTime, endTime, room, allClasses, allOverrides) {
   const conflicts = [];
   const dCode = dayCodeOf(makeupDate);
+  const candidate = allClasses.find((c) => c.id === classId);
+  // Chỉ chặn nếu TRÙNG GIỜ thật với lịch cố định của chính lớp này — khác khung giờ trong cùng ngày vẫn cho phép
+  // (buổi chính thức + buổi học bù cùng ngày, khác giờ, sẽ hiện thành 2 lựa chọn riêng khi điểm danh).
+  if (candidate) {
+    for (const slot of candidate.schedule || []) {
+      if (slot.day === dCode && timesOverlap(startTime, endTime, slot.startTime, slot.endTime)) {
+        conflicts.push(`Trùng giờ với lịch cố định của chính lớp "${candidate.name}" vào ${dCode} (${slot.startTime}-${slot.endTime})`);
+      }
+    }
+  }
   for (const other of allClasses) {
     if (other.id === classId || other.status !== "active") continue;
     for (const slot of other.schedule || []) {
@@ -99,8 +109,9 @@ function findMakeupConflicts(classId, teacherId, makeupDate, startTime, endTime,
     }
   }
   for (const o of allOverrides) {
-    if (o.status !== "makeup" || o.makeupDate !== makeupDate || o.classId === classId) continue;
+    if (o.status !== "makeup" || o.makeupDate !== makeupDate) continue;
     if (!timesOverlap(startTime, endTime, o.makeupStartTime, o.makeupEndTime)) continue;
+    if (o.classId === classId) { conflicts.push(`Lớp "${candidate?.name || ""}" đã có 1 buổi học bù khác trùng giờ vào ngày ${fmtDate(makeupDate)} rồi.`); continue; }
     const otherCls = allClasses.find((c) => c.id === o.classId);
     if (o.makeupRoom === room) conflicts.push(`Trùng PHÒNG ${room} với buổi học bù khác của lớp "${otherCls?.name || ""}"`);
     if (teacherId && otherCls && teacherId === otherCls.teacherId) conflicts.push(`Trùng GIÁO VIÊN với buổi học bù khác của lớp "${otherCls?.name || ""}"`);
@@ -1150,7 +1161,7 @@ function TeacherForm({ teacher, onSave, onCancel }) {
 // ═══════════════════════════════ ATTENDANCE VIEW ═══════════════════════════════
 function AttendanceView({ data, api }) {
   const [date, setDate] = useState(todayStr());
-  const [classId, setClassId] = useState("");
+  const [sessionKey, setSessionKey] = useState("");
   const [showAllClasses, setShowAllClasses] = useState(false);
   const [statusMap, setStatusMap] = useState({});
   const [saving, setSaving] = useState(false);
@@ -1159,43 +1170,49 @@ function AttendanceView({ data, api }) {
 
   const dayCode = dayCodeOf(date);
   const activeClasses = data.classes.filter((c) => c.status === "active");
-  const makeupTargetClassIds = new Set(data.session_overrides.filter((o) => o.status === "makeup" && o.makeupDate === date).map((o) => o.classId));
-  const relevantClasses = showAllClasses ? activeClasses : activeClasses.filter((c) => (c.schedule || []).some((s) => s.day === dayCode) || makeupTargetClassIds.has(c.id));
-  const classList = relevantClasses.length ? relevantClasses : activeClasses; // fallback if nothing scheduled that day
+  const weekdayMatched = activeClasses.filter((c) => (c.schedule || []).some((s) => s.day === dayCode));
+  const regularBase = showAllClasses ? activeClasses : (weekdayMatched.length ? weekdayMatched : activeClasses);
+  const regularOptions = regularBase.map((c) => ({ key: c.id, cls: c, overrideId: "", isMakeup: false }));
+  // Buổi học bù CHUYỂN ĐẾN đúng ngày này — hiện thành 1 lựa chọn riêng "(lớp tạm)", tách biệt khỏi buổi chính thức dù cùng lớp/cùng ngày.
+  const makeupOptions = data.session_overrides.filter((o) => o.status === "makeup" && o.makeupDate === date)
+    .map((o) => ({ key: `mk:${o.id}`, cls: data.classes.find((c) => c.id === o.classId), overrideId: o.id, isMakeup: true, sourceOverride: o }))
+    .filter((x) => x.cls);
+  const sessionOptions = [...regularOptions, ...makeupOptions];
 
   useEffect(() => {
-    if (!classList.some((c) => c.id === classId)) setClassId(classList[0]?.id || "");
+    if (!sessionOptions.some((o) => o.key === sessionKey)) setSessionKey(sessionOptions[0]?.key || "");
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [date, showAllClasses, data.classes.length]);
+  }, [date, showAllClasses, data.classes.length, data.session_overrides.length]);
 
-  const cls = data.classes.find((c) => c.id === classId);
+  const current = sessionOptions.find((o) => o.key === sessionKey);
+  const cls = current?.cls;
+  const isMakeupSession = !!current?.isMakeup;
+  const sessionOverrideId = isMakeupSession ? current.sourceOverride.id : "";
   const roster = cls
     ? data.registrations.filter((r) => r.classId === cls.id && r.status === "active")
         .map((r) => data.students.find((s) => s.id === r.studentId)).filter(Boolean)
         .sort((a, b) => a.name.localeCompare(b.name, "vi"))
     : [];
 
-  // Buổi này (classId+date) có đang bị đánh dấu Nghỉ hoặc đã chuyển học bù đi nơi khác không
-  const override = data.session_overrides.find((o) => o.classId === classId && o.originalDate === date);
-  // Buổi này có PHẢI LÀ đích đến của 1 buổi học bù từ ngày khác chuyển sang không
-  const makeupSource = data.session_overrides.find((o) => o.classId === classId && o.status === "makeup" && o.makeupDate === date);
+  // Buổi CHÍNH THỨC này (không áp dụng cho buổi học bù) có đang bị đánh dấu Nghỉ hoặc đã chuyển học bù đi nơi khác không
+  const override = !isMakeupSession && cls ? data.session_overrides.find((o) => o.classId === cls.id && o.originalDate === date) : null;
   const isCancelled = override?.status === "cancelled";
   const isMoved = override?.status === "makeup";
-  const blocked = isCancelled || isMoved; // không điểm danh được ở 2 trạng thái này
+  const blocked = isCancelled || isMoved; // chỉ chặn buổi chính thức; buổi học bù luôn điểm danh được
 
   const existing = {};
-  data.attendance.filter((a) => a.classId === classId && a.date === date).forEach((a) => { existing[a.studentId] = a; });
+  data.attendance.filter((a) => a.classId === cls?.id && a.date === date && (a.overrideId || "") === sessionOverrideId).forEach((a) => { existing[a.studentId] = a; });
 
   useEffect(() => {
     const m = {};
     roster.forEach((s) => { const ex = existing[s.id]; m[s.id] = { status: ex?.status || "present", note: ex?.note || "", billable: ex ? ex.billable !== false : true }; });
     setStatusMap(m);
     setMakeupForm(null);
-    // Chỉ nạp lại khi đổi LỚP hoặc NGÀY — không nạp lại mỗi khi data.attendance đổi,
+    // Chỉ nạp lại khi đổi BUỔI HỌC (lớp/loại) hoặc NGÀY — không nạp lại mỗi khi data.attendance đổi,
     // vì realtime đồng bộ có thể trả về ngay sau khi Lưu và ghi đè các lựa chọn đang
     // sửa dở trên màn hình (bug đã gặp: mọi học sinh bị trả về "Có mặt" sau khi Lưu).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [classId, date]);
+  }, [sessionKey, date]);
 
   const setStatus = (sid, status) => setStatusMap((m) => ({ ...m, [sid]: { ...m[sid], status } }));
   const setNote = (sid, note) => setStatusMap((m) => ({ ...m, [sid]: { ...m[sid], note } }));
@@ -1206,9 +1223,9 @@ function AttendanceView({ data, api }) {
     if (!roster.length || blocked) return;
     setSaving(true);
     const rows = roster.map((s) => ({
-      id: existing[s.id]?.id || genId(), classId, studentId: s.id, date,
+      id: existing[s.id]?.id || genId(), classId: cls.id, studentId: s.id, date,
       status: statusMap[s.id]?.status || "present", note: statusMap[s.id]?.note || "",
-      billable: statusMap[s.id]?.billable !== false,
+      billable: statusMap[s.id]?.billable !== false, overrideId: sessionOverrideId,
     }));
     await api.saveAttendance(rows);
     setSaving(false);
@@ -1216,17 +1233,17 @@ function AttendanceView({ data, api }) {
 
   const markCancelled = async () => {
     if (!confirm(`Đánh dấu lớp "${cls.name}" NGHỈ vào ${fmtDate(date)}? Buổi này sẽ không tính học phí và không tính lương giáo viên.`)) return;
-    await api.saveSessionOverride({ id: override?.id || genId(), classId, originalDate: date, status: "cancelled", makeupDate: null, makeupStartTime: null, makeupEndTime: null, makeupRoom: null, note: "" }, `Đánh dấu nghỉ: ${cls.name} (${fmtDate(date)})`);
+    await api.saveSessionOverride({ id: override?.id || genId(), classId: cls.id, originalDate: date, status: "cancelled", makeupDate: null, makeupStartTime: null, makeupEndTime: null, makeupRoom: null, note: "" }, `Đánh dấu nghỉ: ${cls.name} (${fmtDate(date)})`);
   };
   const clearOverride = async () => { if (override) await api.deleteSessionOverride(override.id); };
   const openMakeupForm = () => setMakeupForm({ date: "", startTime: cls?.schedule?.[0]?.startTime || "17:30", endTime: cls?.schedule?.[0]?.endTime || "19:00", room: ROOMS[0], note: "" });
   const saveMakeup = async () => {
     if (!makeupForm.date) return alert("Chọn ngày học bù!");
     if (makeupForm.date === date) return alert("Ngày học bù phải khác ngày gốc!");
-    const conflicts = findMakeupConflicts(classId, cls.teacherId, makeupForm.date, makeupForm.startTime, makeupForm.endTime, makeupForm.room, data.classes, data.session_overrides.filter((o) => o.id !== override?.id));
+    const conflicts = findMakeupConflicts(cls.id, cls.teacherId, makeupForm.date, makeupForm.startTime, makeupForm.endTime, makeupForm.room, data.classes, data.session_overrides.filter((o) => o.id !== override?.id));
     if (conflicts.length) return alert(`❌ Không thể xếp — trùng lịch:\n\n${conflicts.join("\n")}`);
     await api.saveSessionOverride({
-      id: override?.id || genId(), classId, originalDate: date, status: "makeup",
+      id: override?.id || genId(), classId: cls.id, originalDate: date, status: "makeup",
       makeupDate: makeupForm.date, makeupStartTime: makeupForm.startTime, makeupEndTime: makeupForm.endTime, makeupRoom: makeupForm.room, note: makeupForm.note,
     }, `Chuyển học bù: ${cls.name} (${fmtDate(date)} → ${fmtDate(makeupForm.date)})`);
     setMakeupForm(null);
@@ -1242,9 +1259,13 @@ function AttendanceView({ data, api }) {
       <Card title="Điểm danh theo buổi học" icon={ClipboardCheck} iconColor={C.navyLight} action={
         <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
           <input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={{ padding: "7px 12px", borderRadius: 8, border: `1.5px solid ${C.border}`, fontSize: 14, outline: "none" }} />
-          <select value={classId} onChange={(e) => setClassId(e.target.value)} style={{ padding: "7px 12px", borderRadius: 8, border: `1.5px solid ${C.border}`, fontSize: 14, outline: "none", minWidth: 200 }}>
-            {classList.length === 0 && <option value="">Chưa có lớp</option>}
-            {classList.map((c) => <option key={c.id} value={c.id}>{c.name} ({scheduleSummary(c.schedule)})</option>)}
+          <select value={sessionKey} onChange={(e) => setSessionKey(e.target.value)} style={{ padding: "7px 12px", borderRadius: 8, border: `1.5px solid ${C.border}`, fontSize: 14, outline: "none", minWidth: 220 }}>
+            {sessionOptions.length === 0 && <option value="">Chưa có lớp</option>}
+            {sessionOptions.map((o) => (
+              <option key={o.key} value={o.key}>
+                {o.cls.name}{o.isMakeup ? " (lớp tạm)" : ""} · {o.isMakeup ? `${o.sourceOverride.makeupStartTime}-${o.sourceOverride.makeupEndTime} (${o.sourceOverride.makeupRoom})` : scheduleSummary(o.cls.schedule)}
+              </option>
+            ))}
           </select>
           <label style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 13, color: C.muted, cursor: "pointer" }}>
             <input type="checkbox" checked={showAllClasses} onChange={(e) => setShowAllClasses(e.target.checked)} />
@@ -1253,24 +1274,25 @@ function AttendanceView({ data, api }) {
           <Btn color={C.green} style={{ padding: "7px 12px", fontSize: 13 }} onClick={() => exportAttendanceTab(data)}><FileSpreadsheet size={13} />Xuất Excel</Btn>
         </div>
       }>
-        {!relevantClasses.length && !showAllClasses && (
+        {!weekdayMatched.length && !showAllClasses && (
           <div style={{ marginBottom: 14, padding: 10, background: C.amber + "15", borderRadius: 8, fontSize: 13, color: "#92650b" }}>
             Không có lớp nào lịch học rơi vào thứ này ({dayCode}). Đang hiện tất cả lớp — tick "Hiện tất cả lớp" nếu đây là buổi học bù.
           </div>
         )}
         {cls && (
           <>
-            {makeupSource && (
+            {isMakeupSession && (
               <div style={{ marginBottom: 14, padding: 10, background: C.purple + "15", borderRadius: 8, fontSize: 13, color: "#5b21b6" }}>
-                🔁 Đây là buổi <b>học bù</b> cho ngày gốc {fmtDate(makeupSource.originalDate)} (Phòng {makeupSource.makeupRoom}). Điểm danh bình thường như buổi chính thức.
+                🔁 Đây là buổi <b>học bù (lớp tạm)</b> cho ngày gốc {fmtDate(current.sourceOverride.originalDate)} — tách riêng khỏi buổi chính thức, không ảnh hưởng lịch cố định. Điểm danh bình thường.
+                {current.sourceOverride.note && <div style={{ marginTop: 4, fontStyle: "italic" }}>Ghi chú: {current.sourceOverride.note}</div>}
               </div>
             )}
 
-            <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
+            {!isMakeupSession && <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
               <button onClick={clearOverride} disabled={!override} style={{ padding: "7px 14px", borderRadius: 8, border: `1.5px solid ${!override ? C.blue : C.border}`, background: !override ? C.blue + "18" : "#fff", color: !override ? C.blue : C.muted, fontWeight: 600, fontSize: 13, cursor: override ? "pointer" : "default" }}>Học bình thường</button>
               <button onClick={markCancelled} style={{ padding: "7px 14px", borderRadius: 8, border: `1.5px solid ${isCancelled ? C.red : C.border}`, background: isCancelled ? C.red + "18" : "#fff", color: isCancelled ? C.red : C.muted, fontWeight: 600, fontSize: 13, cursor: "pointer" }}>Nghỉ</button>
               <button onClick={openMakeupForm} style={{ padding: "7px 14px", borderRadius: 8, border: `1.5px solid ${isMoved ? C.purple : C.border}`, background: isMoved ? C.purple + "18" : "#fff", color: isMoved ? C.purple : C.muted, fontWeight: 600, fontSize: 13, cursor: "pointer" }}>Chuyển học bù</button>
-            </div>
+            </div>}
 
             {isCancelled && (
               <div style={{ padding: 16, background: C.red + "0d", borderRadius: 10, marginBottom: 16, color: C.red, fontSize: 14 }}>
@@ -1280,7 +1302,7 @@ function AttendanceView({ data, api }) {
 
             {isMoved && (
               <div style={{ padding: 16, background: C.purple + "0d", borderRadius: 10, marginBottom: 16, color: "#5b21b6", fontSize: 14 }}>
-                🔁 Buổi học ngày {fmtDate(date)} đã <b>chuyển học bù</b> sang <b>{fmtDate(override.makeupDate)}</b>, {override.makeupStartTime}–{override.makeupEndTime}, Phòng {override.makeupRoom}.
+                🔁 Buổi học ngày {fmtDate(date)} đã <b>chuyển học bù</b> sang <b>{fmtDate(override.makeupDate)}</b>, {override.makeupStartTime}–{override.makeupEndTime}, Phòng {override.makeupRoom} (hiện thành lựa chọn "(lớp tạm)" riêng vào đúng ngày đó).
                 {override.note && <div style={{ marginTop: 4, fontStyle: "italic" }}>Ghi chú: {override.note}</div>}
                 <div style={{ marginTop: 8 }}><Btn color={C.purple} outlined style={{ padding: "5px 12px", fontSize: 12.5 }} onClick={openMakeupForm}>Sửa thông tin học bù</Btn></div>
               </div>
@@ -1857,7 +1879,7 @@ function AuthenticatedApp({ profile, onSignOut }) {
     updatePaymentStatus: async (id, status, paid_date, label) => { try { await updateRow("payments", id, { status, paid_date }); if (label) log("update", "payment", `${status === "paid" ? "Thu học phí" : "Hoàn lại học phí"}: ${label}`); } catch { showToast("⚠ Lỗi khi cập nhật học phí", C.red); } },
 
     saveAttendance: async (rows) => {
-      try { await upsertRows("attendance", rows, "class_id,student_id,date"); showToast("✓ Đã lưu điểm danh"); }
+      try { await upsertRows("attendance", rows, "class_id,student_id,date,override_id"); showToast("✓ Đã lưu điểm danh"); }
       catch { showToast("⚠ Lỗi khi lưu điểm danh", C.red); }
     },
 

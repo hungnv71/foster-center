@@ -131,7 +131,8 @@ const buildAttendanceRows = (data) => (data.attendance || [])
     const s = data.students.find((x) => x.id === a.studentId);
     const c = data.classes.find((x) => x.id === a.classId);
     return {
-      "Ngày": fmtDateVN(a.date), "Lớp": c?.name || "", "Học sinh": s?.name || "", "Trạng thái": ATT_LABEL[a.status] || a.status,
+      "Ngày": fmtDateVN(a.date), "Lớp": c?.name || "", "Buổi": a.overrideId ? "Học bù (lớp tạm)" : "Chính thức",
+      "Học sinh": s?.name || "", "Trạng thái": ATT_LABEL[a.status] || a.status,
       "Tính học phí": a.billable === false ? "Không" : "Có", "Ghi chú": a.note || "",
     };
   });

@@ -83,11 +83,11 @@ export const paymentToRow = (p) => ({
 
 export const rowToAttendance = (r) => ({
   id: r.id, classId: r.class_id, studentId: r.student_id, date: r.date, status: r.status, note: r.note || "",
-  billable: r.billable !== false,
+  billable: r.billable !== false, overrideId: r.override_id || "",
 });
 export const attendanceToRow = (a) => ({
   id: a.id, class_id: a.classId, student_id: a.studentId, date: a.date, status: a.status, note: a.note || null,
-  billable: a.billable !== false,
+  billable: a.billable !== false, override_id: a.overrideId || "",
 });
 
 export const rowToOverride = (r) => ({
