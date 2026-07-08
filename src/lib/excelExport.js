@@ -1,26 +1,72 @@
-import * as XLSX from "xlsx";
+import ExcelJS from "exceljs";
 
 const fmtDateVN = (d) => (d ? new Date(d).toLocaleDateString("vi-VN") : "");
 const todayTag = () => new Date().toISOString().slice(0, 10);
 const ATT_LABEL = { present: "Có mặt", absent: "Vắng", late: "Muộn", excused: "Có phép" };
 const LOG_ACTION_LABEL = { create: "Thêm", update: "Sửa", delete: "Xóa" };
+const NAVY = "FF132A52";
+const BORDER = "FFE2E8F0";
+const HEADER_TXT = "FFFFFFFF";
 
-function autoWidth(ws, rows) {
-  if (!rows.length) return;
-  const cols = Object.keys(rows[0]).map((k) => ({
-    wch: Math.max(k.length, ...rows.map((r) => String(r[k] ?? "").length)) + 2,
-  }));
-  ws["!cols"] = cols;
+// ═══════════════════ hạ tầng: tạo sheet có định dạng đẹp + tải file ═══════════════════
+async function downloadWorkbook(wb, filename) {
+  const buf = await wb.xlsx.writeBuffer();
+  const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }
-function sheetFrom(rows) {
-  const ws = XLSX.utils.json_to_sheet(rows);
-  autoWidth(ws, rows);
+
+function addStyledSheet(wb, sheetName, rows, opts = {}) {
+  const ws = wb.addWorksheet(sheetName.slice(0, 31));
+  if (!rows.length) { ws.addRow(["Không có dữ liệu"]); return ws; }
+  const headers = Object.keys(rows[0]);
+  const currencyCols = opts.currencyColumns || headers.filter((h) => /tiền|lương|học phí|nợ/i.test(h));
+  const centerCols = opts.centerColumns || headers.filter((h) => /^(khối|số buổi|% học phí|trạng thái|ngày|tháng|năm|sĩ số)/i.test(h));
+
+  ws.columns = headers.map((h) => ({
+    header: h, key: h,
+    width: Math.min(42, Math.max(h.length, ...rows.map((r) => String(r[h] ?? "").length)) + 3),
+  }));
+
+  const headerRow = ws.getRow(1);
+  headerRow.eachCell((cell) => {
+    cell.font = { bold: true, color: { argb: HEADER_TXT }, size: 11 };
+    cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: NAVY } };
+    cell.alignment = { vertical: "middle", horizontal: "center", wrapText: true };
+  });
+  headerRow.height = 22;
+
+  rows.forEach((r) => ws.addRow(r));
+
+  headers.forEach((h, i) => {
+    const col = ws.getColumn(i + 1);
+    if (currencyCols.includes(h)) { col.numFmt = "#,##0\" đ\""; col.alignment = { horizontal: "right" }; }
+    else if (centerCols.includes(h)) { col.alignment = { horizontal: "center" }; }
+  });
+
+  ws.eachRow((row, rowNum) => {
+    row.eachCell((cell) => {
+      cell.border = {
+        top: { style: "thin", color: { argb: BORDER } }, left: { style: "thin", color: { argb: BORDER } },
+        bottom: { style: "thin", color: { argb: BORDER } }, right: { style: "thin", color: { argb: BORDER } },
+      };
+      if (rowNum > 1) cell.alignment = { ...cell.alignment, vertical: "middle" };
+    });
+    if (rowNum > 1 && rowNum % 2 === 0) row.eachCell((c) => { if (!c.fill) c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF7F8FA" } }; });
+  });
+
+  ws.views = [{ state: "frozen", ySplit: 1 }];
+  ws.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: headers.length } };
   return ws;
 }
-function oneSheetWorkbook(rows, sheetName, filename) {
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, sheetFrom(rows), sheetName);
-  XLSX.writeFile(wb, filename);
+
+async function oneSheetWorkbook(rows, sheetName, filename, opts) {
+  const wb = new ExcelJS.Workbook();
+  addStyledSheet(wb, sheetName, rows, opts);
+  await downloadWorkbook(wb, filename);
 }
 
 // ═══════════════════ row builders (dùng chung giữa export toàn bộ và export từng tab) ═══════════════════
@@ -58,14 +104,23 @@ const buildRegistrationRows = (data) => data.registrations.map((r) => {
   };
 });
 
+// Số buổi đi học thực tế (mọi trạng thái) vs số buổi tính học phí (đã trừ buổi "không tính")
+function sessionCounts(attendance, studentId, classId, month, year) {
+  const prefix = `${year}-${String(month).padStart(2, "0")}`;
+  const recs = attendance.filter((a) => a.studentId === studentId && a.classId === classId && a.date.startsWith(prefix));
+  return { total: recs.length, billed: recs.filter((a) => a.billable !== false).length };
+}
+
 const buildPaymentRows = (data) => data.payments
   .slice().sort((a, b) => b.year - a.year || b.month - a.month)
   .map((p) => {
     const s = data.students.find((x) => x.id === p.studentId);
     const c = data.classes.find((x) => x.id === p.classId);
+    const counts = sessionCounts(data.attendance || [], p.studentId, p.classId, p.month, p.year);
     return {
       "Tháng": p.month, "Năm": p.year, "Học sinh": s?.name || "", "Lớp": c?.name || "",
-      "Số tiền": p.amount, "Trạng thái": p.status === "paid" ? "Đã thu" : "Chưa thu",
+      "Số buổi đi học": counts.total, "Số buổi tính học phí": p.sessionsBilled ?? counts.billed,
+      "% học phí": s?.feePercent ?? 100, "Số tiền": p.amount, "Trạng thái": p.status === "paid" ? "Đã thu" : "Chưa thu",
       "Ngày thu": p.paidDate ? fmtDateVN(p.paidDate) : "",
     };
   });
@@ -114,18 +169,18 @@ const buildOverrideRows = (data) => (data.session_overrides || [])
   });
 
 // ═══════════════════ export toàn bộ (nút ở sidebar) ═══════════════════
-export function exportFullWorkbook(data) {
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, sheetFrom(buildTeacherRows(data)), "Giáo viên");
-  XLSX.utils.book_append_sheet(wb, sheetFrom(buildClassRows(data)), "Lớp học");
-  XLSX.utils.book_append_sheet(wb, sheetFrom(buildStudentRows(data)), "Học sinh");
-  XLSX.utils.book_append_sheet(wb, sheetFrom(buildRegistrationRows(data)), "Đăng ký");
-  XLSX.utils.book_append_sheet(wb, sheetFrom(buildPaymentRows(data)), "Học phí");
-  XLSX.utils.book_append_sheet(wb, sheetFrom(buildAttendanceRows(data)), "Điểm danh");
-  XLSX.utils.book_append_sheet(wb, sheetFrom(buildOverrideRows(data)), "Nghỉ - Học bù");
-  XLSX.utils.book_append_sheet(wb, sheetFrom(buildPayrollRows(data)), "Lương GV");
-  XLSX.utils.book_append_sheet(wb, sheetFrom(buildActivityLogRows(data)), "Nhật ký");
-  XLSX.writeFile(wb, `Foster-du-lieu-${todayTag()}.xlsx`);
+export async function exportFullWorkbook(data) {
+  const wb = new ExcelJS.Workbook();
+  addStyledSheet(wb, "Giáo viên", buildTeacherRows(data));
+  addStyledSheet(wb, "Lớp học", buildClassRows(data));
+  addStyledSheet(wb, "Học sinh", buildStudentRows(data));
+  addStyledSheet(wb, "Đăng ký", buildRegistrationRows(data));
+  addStyledSheet(wb, "Học phí", buildPaymentRows(data));
+  addStyledSheet(wb, "Điểm danh", buildAttendanceRows(data));
+  addStyledSheet(wb, "Nghỉ - Học bù", buildOverrideRows(data));
+  addStyledSheet(wb, "Lương GV", buildPayrollRows(data));
+  addStyledSheet(wb, "Nhật ký", buildActivityLogRows(data));
+  await downloadWorkbook(wb, `Foster-du-lieu-${todayTag()}.xlsx`);
 }
 
 // ═══════════════════ export riêng từng tab ═══════════════════
@@ -136,20 +191,20 @@ export const exportAttendanceTab = (data) => oneSheetWorkbook(buildAttendanceRow
 export const exportPayrollTab = (data) => oneSheetWorkbook(buildPayrollRows(data), "Lương GV", `Foster-luong-gv-${todayTag()}.xlsx`);
 export const exportActivityLogTab = (data) => oneSheetWorkbook(buildActivityLogRows(data), "Nhật ký", `Foster-nhat-ky-${todayTag()}.xlsx`);
 
-export function exportDashboardTab(data, todaySessions) {
-  const wb = XLSX.utils.book_new();
+export async function exportDashboardTab(data, todaySessions) {
+  const wb = new ExcelJS.Workbook();
   const summary = [{
     "Lớp đang hoạt động": data.classes.filter((c) => c.status === "active").length,
     "Học sinh đang học": [...new Set(data.registrations.filter((r) => r.status === "active").map((r) => r.studentId))].length,
     "Giáo viên": data.teachers.length,
   }];
-  XLSX.utils.book_append_sheet(wb, sheetFrom(summary), "Tổng quan");
+  addStyledSheet(wb, "Tổng quan", summary);
   const todayRows = todaySessions.map(({ cls, slot, teacherName, enrolled }) => ({
     "Giờ học": `${slot.startTime}-${slot.endTime}`, "Lớp": cls.name, "Môn": cls.subject,
     "Giáo viên": teacherName, "Phòng": slot.room, "Sĩ số": enrolled,
   }));
-  XLSX.utils.book_append_sheet(wb, sheetFrom(todayRows), "Lịch hôm nay");
-  XLSX.writeFile(wb, `Foster-tong-quan-${todayTag()}.xlsx`);
+  addStyledSheet(wb, "Lịch hôm nay", todayRows);
+  await downloadWorkbook(wb, `Foster-tong-quan-${todayTag()}.xlsx`);
 }
 
 export function exportDebtSummaryTab(debtList) {
@@ -159,20 +214,19 @@ export function exportDebtSummaryTab(debtList) {
       "Tháng": it.month, "Năm": it.year, "Số tiền nợ": it.amount,
     }))
   );
-  oneSheetWorkbook(rows, "Công nợ", `Foster-cong-no-${todayTag()}.xlsx`);
+  return oneSheetWorkbook(rows, "Công nợ", `Foster-cong-no-${todayTag()}.xlsx`);
 }
 
 // ═══════════════════ báo cáo học phí / lương / báo cáo tổng hợp ═══════════════════
-
-export function exportMonthlyPaymentReport(rows) {
+export function exportMonthlyPaymentReport(rows, month, year) {
   const out = rows.map(({ s, cl, pay, sessions, amount }) => ({
     "Học sinh": s.name, "Phụ huynh": s.parentName, "SĐT PH": s.parentPhone, "Lớp": cl.name,
-    "Số buổi tính tiền": sessions, "% học phí": s.feePercent ?? 100,
+    "Số buổi tính học phí": sessions, "% học phí": s.feePercent ?? 100,
     "Học phí": amount,
     "Trạng thái": !pay ? "Chưa tạo" : pay.status === "paid" ? "Đã thu" : "Chưa thu",
     "Ngày thu": pay?.paidDate ? fmtDateVN(pay.paidDate) : "",
   }));
-  oneSheetWorkbook(out, "Học phí", `Foster-hoc-phi-${todayTag()}.xlsx`);
+  return oneSheetWorkbook(out, `Thang ${month}-${year}`, `Foster-hoc-phi-T${month}-${year}.xlsx`);
 }
 
 export function exportMonthlyPayrollReport(rows, month, year) {
@@ -181,13 +235,13 @@ export function exportMonthlyPayrollReport(rows, month, year) {
     "Tổng lương": amount, "Trạng thái": !roll ? "Chưa tạo" : roll.status === "paid" ? "Đã trả" : "Chưa trả",
     "Ngày trả": roll?.paidDate ? fmtDateVN(roll.paidDate) : "",
   }));
-  oneSheetWorkbook(out, `Luong T${month}-${year}`, `Foster-luong-gv-T${month}-${year}.xlsx`);
+  return oneSheetWorkbook(out, `Luong T${month}-${year}`, `Foster-luong-gv-T${month}-${year}.xlsx`);
 }
 
-export function exportSummaryReport({ revenueData, gradeData, occData }) {
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, sheetFrom(revenueData.map((r) => ({ "Tháng": r.month, "Doanh thu": r.revenue }))), "Doanh thu");
-  XLSX.utils.book_append_sheet(wb, sheetFrom(gradeData.map((g) => ({ "Khối": g.grade, "Số học sinh": g.count }))), "Học sinh theo khối");
-  XLSX.utils.book_append_sheet(wb, sheetFrom(occData.map((c) => ({ "Lớp": c.name, "Sĩ số hiện tại": c.enrolled, "Sĩ số tối đa": c.max, "Tỷ lệ lấp đầy (%)": Math.round((c.enrolled / c.max) * 100) }))), "Tỷ lệ lấp đầy");
-  XLSX.writeFile(wb, `Foster-bao-cao-${todayTag()}.xlsx`);
+export async function exportSummaryReport({ revenueData, gradeData, occData }) {
+  const wb = new ExcelJS.Workbook();
+  addStyledSheet(wb, "Doanh thu", revenueData.map((r) => ({ "Tháng": r.month, "Doanh thu": r.revenue })));
+  addStyledSheet(wb, "Học sinh theo khối", gradeData.map((g) => ({ "Khối": g.grade, "Số học sinh": g.count })));
+  addStyledSheet(wb, "Tỷ lệ lấp đầy", occData.map((c) => ({ "Lớp": c.name, "Sĩ số hiện tại": c.enrolled, "Sĩ số tối đa": c.max, "Tỷ lệ lấp đầy (%)": Math.round((c.enrolled / c.max) * 100) })));
+  await downloadWorkbook(wb, `Foster-bao-cao-${todayTag()}.xlsx`);
 }

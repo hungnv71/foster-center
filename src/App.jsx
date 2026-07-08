@@ -45,6 +45,11 @@ function billableSessionsInMonth(attendance, studentId, classId, month, year) {
   const prefix = `${year}-${String(month).padStart(2, "0")}`;
   return attendance.filter((a) => a.studentId === studentId && a.classId === classId && a.date.startsWith(prefix) && a.billable !== false).length;
 }
+// Tổng số buổi ĐÃ ĐIỂM DANH (mọi trạng thái, không trừ buổi miễn) — dùng để đối chiếu với số buổi tính học phí
+function totalSessionsInMonth(attendance, studentId, classId, month, year) {
+  const prefix = `${year}-${String(month).padStart(2, "0")}`;
+  return attendance.filter((a) => a.studentId === studentId && a.classId === classId && a.date.startsWith(prefix)).length;
+}
 const timesOverlap = (s1, e1, s2, e2) => s1 < e2 && s2 < e1;
 
 // Số buổi giáo viên ĐÃ THỰC SỰ dạy trong tháng — đếm theo bản ghi điểm danh thật (không phải lịch lý thuyết)
@@ -311,8 +316,15 @@ function Dashboard({ data }) {
 
   const nowHM = now.toTimeString().slice(0, 5);
   let markedNext = false;
+  // Buổi nào hôm nay đã bị đánh dấu Nghỉ/Học bù đi nơi khác thì loại khỏi lịch cố định;
+  // buổi nào là học bù CHUYỂN ĐẾN hôm nay thì thêm vào, kèm cờ isMakeup để gắn nhãn riêng.
+  const todayOverriddenAway = new Set(data.session_overrides.filter((o) => o.originalDate === todayStr_ && (o.status === "cancelled" || o.status === "makeup")).map((o) => o.classId));
+  const todayMakeupIns = data.session_overrides.filter((o) => o.status === "makeup" && o.makeupDate === todayStr_)
+    .map((o) => ({ cls: data.classes.find((c) => c.id === o.classId), slot: { startTime: o.makeupStartTime, endTime: o.makeupEndTime, room: o.makeupRoom }, isMakeup: true }))
+    .filter((x) => x.cls);
   const todaySessions = activeClasses
-    .flatMap((cls) => (cls.schedule || []).filter((s) => s.day === todayCode).map((slot) => ({ cls, slot })))
+    .flatMap((cls) => (cls.schedule || []).filter((s) => s.day === todayCode && !todayOverriddenAway.has(cls.id)).map((slot) => ({ cls, slot, isMakeup: false })))
+    .concat(todayMakeupIns)
     .sort((a, b) => a.slot.startTime.localeCompare(b.slot.startTime))
     .map((s) => {
       let status;
@@ -413,17 +425,25 @@ function Dashboard({ data }) {
             <FileSpreadsheet size={13} />Xuất Excel
           </Btn>
         }>
+          {todayOverriddenAway.size > 0 && (() => {
+            const cancelledToday = [...todayOverriddenAway].map((cid) => data.classes.find((c) => c.id === cid)).filter(Boolean);
+            const namesText = cancelledToday.map((c) => c.name).join(", ");
+            return <div style={{ marginBottom: 10, padding: "8px 10px", background: C.bg, borderRadius: 8, fontSize: 12, color: C.muted }}>ℹ Đã nghỉ hoặc chuyển học bù hôm nay: <b>{namesText}</b> — xem chi tiết ở tab Điểm danh.</div>;
+          })()}
           {todaySessions.length === 0
             ? <div style={{ textAlign: "center", padding: "20px 0", color: C.muted, fontSize: 13 }}>Hôm nay không có lớp nào theo lịch cố định.</div>
             : <div style={{ display: "flex", flexDirection: "column" }}>
-                {todaySessions.map(({ cls, slot, status }, i) => {
+                {todaySessions.map(({ cls, slot, status, isMakeup }, i) => {
                   const t = data.teachers.find((x) => x.id === cls.teacherId);
                   const st = SESSION_STATUS[status];
                   return (
                     <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 0", borderBottom: i < todaySessions.length - 1 ? `1px solid ${C.border}` : "none" }}>
                       <div style={{ fontSize: 12, color: C.muted, width: 92, flexShrink: 0 }}>{slot.startTime}–{slot.endTime}</div>
                       <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontWeight: 600, fontSize: 13.5, color: C.text }}>{cls.name}</div>
+                        <div style={{ fontWeight: 600, fontSize: 13.5, color: C.text, display: "flex", alignItems: "center", gap: 6 }}>
+                          {cls.name}
+                          {isMakeup && <span style={{ background: C.purple + "18", color: "#5b21b6", fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 99 }}>Học bù</span>}
+                        </div>
                         <div style={{ fontSize: 11.5, color: C.muted }}>{t?.name || "Chưa phân công"} · {slot.room}</div>
                       </div>
                       <span style={{ background: st.bg, color: st.fg, fontSize: 10.5, fontWeight: 600, padding: "3px 9px", borderRadius: 99, flexShrink: 0 }}>{st.label}</span>
@@ -1349,6 +1369,7 @@ function PaymentsView({ data, api }) {
   const [year, setYear] = useState(now.getFullYear());
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState(""); // "" | paid | unpaid
+  const [classFilter, setClassFilter] = useState("");
   const [viewMode, setViewMode] = useState("monthly"); // monthly | debt
   const activeRegs = data.registrations.filter((r) => r.status === "active");
   const mPays = data.payments.filter((p) => p.month === month && p.year === year);
@@ -1361,14 +1382,16 @@ function PaymentsView({ data, api }) {
     if (!s || !cl) return null;
     const pay = mPays.find((p) => p.studentId === r.studentId && p.classId === r.classId);
     const liveSessions = liveSessionsFor(r.studentId, r.classId);
+    const liveTotalSessions = totalSessionsInMonth(data.attendance, r.studentId, r.classId, month, year);
     // Đã có bản ghi (pay) thì hiện đúng số đã CHỐT lúc tạo/thu tiền; chưa có thì hiện số dự kiến theo điểm danh hiện tại.
     const sessions = pay ? pay.sessionsBilled ?? liveSessions : liveSessions;
     const amount = pay ? pay.amount : amountFor(cl, s, liveSessions);
     const stale = pay && pay.status === "unpaid" && pay.sessionsBilled !== undefined && pay.sessionsBilled !== liveSessions;
-    return { r, s, cl, pay, sessions, liveSessions, amount, stale };
+    return { r, s, cl, pay, sessions, totalSessions: liveTotalSessions, liveSessions, amount, stale };
   }).filter(Boolean)
     .filter((row) => row.s.name.toLowerCase().includes(search.toLowerCase()) || row.cl.name.toLowerCase().includes(search.toLowerCase()))
-    .filter((row) => !statusFilter || (statusFilter === "paid" ? row.pay?.status === "paid" : row.pay?.status !== "paid"));
+    .filter((row) => !statusFilter || (statusFilter === "paid" ? row.pay?.status === "paid" : row.pay?.status !== "paid"))
+    .filter((row) => !classFilter || row.cl.id === classFilter);
 
   const totalExpected = rows.reduce((sum, r) => sum + r.amount, 0);
   const totalPaid = rows.filter((r) => r.pay?.status === "paid").reduce((sum, r) => sum + r.pay.amount, 0);
@@ -1440,11 +1463,15 @@ function PaymentsView({ data, api }) {
               <option value="unpaid">⚠ Chưa thu ({unpaidCount})</option>
               <option value="paid">✓ Đã thu</option>
             </select>
+            <select value={classFilter} onChange={(e) => setClassFilter(e.target.value)} style={{ padding: "7px 12px", borderRadius: 8, border: `1.5px solid ${C.border}`, fontSize: 14, outline: "none" }}>
+              <option value="">Tất cả lớp</option>
+              {data.classes.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
             <div style={{ position: "relative" }}><Search size={14} style={{ position: "absolute", left: 9, top: "50%", transform: "translateY(-50%)", color: C.muted }} />
-              <input placeholder="Tìm..." value={search} onChange={(e) => setSearch(e.target.value)} style={{ padding: "7px 12px 7px 30px", borderRadius: 8, border: `1.5px solid ${C.border}`, fontSize: 14, width: 140, outline: "none" }} /></div>
+              <input placeholder="Tìm..." value={search} onChange={(e) => setSearch(e.target.value)} style={{ padding: "7px 12px 7px 30px", borderRadius: 8, border: `1.5px solid ${C.border}`, width: 140, outline: "none" }} /></div>
             <Btn color={C.blue} onClick={generate}><RefreshCw size={14} />Tạo bản ghi</Btn>
             <Btn color={C.green} onClick={markAllPaid}><CheckCircle size={14} />Đánh dấu đã thu tất cả</Btn>
-            <Btn color={C.green} onClick={() => exportMonthlyPaymentReport(rows)}><FileSpreadsheet size={14} />Xuất Excel</Btn>
+            <Btn color={C.green} onClick={() => exportMonthlyPaymentReport(rows, month, year)}><FileSpreadsheet size={14} />Xuất Excel</Btn>
           </>}
           {viewMode === "debt" && (
             <Btn color={C.green} onClick={() => exportDebtSummaryTab(debtList)}><FileSpreadsheet size={14} />Xuất Excel</Btn>
@@ -1454,17 +1481,18 @@ function PaymentsView({ data, api }) {
         {viewMode === "monthly" ? (
           <div>
           <div style={{ marginBottom: 14, padding: 10, background: C.blue + "10", borderRadius: 8, fontSize: 12.5, color: C.navy }}>
-            💡 Học phí tính theo <b>điểm danh thực tế</b> (trừ các buổi đánh dấu "không tính học phí"), nhân với <b>% học phí</b> riêng của từng học sinh. Lớp/học sinh nào chưa điểm danh đủ trong tháng sẽ chưa được tính đủ tiền.
+            💡 Học phí tính theo <b>điểm danh thực tế</b> (trừ các buổi đánh dấu "không tính học phí"), nhân với <b>% học phí</b> riêng của từng học sinh. Lớp/học sinh nào chưa điểm danh đủ trong tháng sẽ chưa được tính đủ tiền. Dòng <b>🔒 Đã thu</b> giữ nguyên số liệu tại thời điểm thu — điểm danh thêm sau đó sẽ không tự đổi số tiền.
           </div>
           <div style={{ overflowX: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
-              <thead><tr style={{ background: C.bg }}>{["Học sinh", "Lớp", "Số buổi", "% học phí", "Học phí", "Trạng thái", "Ngày thu", "Thao tác"].map((h, i) => <Th key={i}>{h}</Th>)}</tr></thead>
+              <thead><tr style={{ background: C.bg }}>{["Học sinh", "Lớp", "Số buổi đi học", "Số buổi tính học phí", "% học phí", "Học phí", "Trạng thái", "Ngày thu", "Thao tác"].map((h, i) => <Th key={i}>{h}</Th>)}</tr></thead>
               <tbody>
                 {rows.map((row, i) => (
                   <tr key={i} style={{ borderBottom: `1px solid ${C.border}` }} onMouseEnter={(e) => (e.currentTarget.style.background = "#f8fafc")} onMouseLeave={(e) => (e.currentTarget.style.background = "")}>
                     <Td style={{ fontWeight: 700, color: C.text }}>{row.s.name}</Td>
                     <Td><Badge color={C.blue}>{row.cl.name}</Badge></Td>
-                    <Td style={{ color: C.muted }}>
+                    <Td style={{ color: C.muted }}>{row.pay?.status === "paid" ? "—" : row.totalSessions}</Td>
+                    <Td style={{ color: C.text, fontWeight: 600 }}>
                       {row.sessions} buổi
                       {row.stale && <span title={`Điểm danh mới nhất cho thấy ${row.liveSessions} buổi — bấm "Tạo bản ghi" để cập nhật`} style={{ marginLeft: 6, color: C.amber, fontSize: 11, fontWeight: 700 }}>⚠ lệch</span>}
                     </Td>
@@ -1472,7 +1500,7 @@ function PaymentsView({ data, api }) {
                     <Td style={{ fontWeight: 700, color: C.amber }}>{fmtMoney(row.amount)}</Td>
                     <Td>
                       {!row.pay ? <Badge color={C.muted}>Chưa tạo</Badge>
-                        : row.pay.status === "paid" ? <Badge color={C.green}>✓ Đã thu</Badge>
+                        : row.pay.status === "paid" ? <Badge color={C.green}>🔒 Đã thu</Badge>
                         : <Badge color={C.red}>⚠ Chưa thu</Badge>}
                     </Td>
                     <Td style={{ color: C.muted }}>{row.pay?.paidDate ? fmtDate(row.pay.paidDate) : "—"}</Td>
@@ -1483,7 +1511,7 @@ function PaymentsView({ data, api }) {
                     </Td>
                   </tr>
                 ))}
-                {!rows.length && <tr><td colSpan={8} style={{ padding: "32px", textAlign: "center", color: C.muted }}>Không có dữ liệu khớp bộ lọc</td></tr>}
+                {!rows.length && <tr><td colSpan={9} style={{ padding: "32px", textAlign: "center", color: C.muted }}>Không có dữ liệu khớp bộ lọc</td></tr>}
               </tbody>
             </table>
           </div>
@@ -1596,7 +1624,7 @@ function PayrollView({ data, api }) {
                   <Td style={{ fontWeight: 700, color: C.amber }}>{fmtMoney(row.amount)}</Td>
                   <Td>
                     {!row.roll ? <Badge color={C.muted}>Chưa tạo</Badge>
-                      : row.roll.status === "paid" ? <Badge color={C.green}>✓ Đã trả</Badge>
+                      : row.roll.status === "paid" ? <Badge color={C.green}>🔒 Đã trả</Badge>
                       : <Badge color={C.red}>⚠ Chưa trả</Badge>}
                   </Td>
                   <Td>
