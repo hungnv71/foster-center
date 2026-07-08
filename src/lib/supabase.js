@@ -54,11 +54,13 @@ export const rowToStudent = (r) => ({
   id: r.id, name: r.name, phone: r.phone, parentName: r.parent_name, parentPhone: r.parent_phone,
   grade: r.grade, address: r.address, joinDate: r.join_date,
   parentCccd: r.parent_cccd || "", parentTaxCode: r.parent_tax_code || "",
+  feePercent: r.fee_percent === null || r.fee_percent === undefined ? 100 : Number(r.fee_percent),
 });
 export const studentToRow = (s) => ({
   id: s.id, name: s.name, phone: s.phone, parent_name: s.parentName, parent_phone: s.parentPhone,
   grade: s.grade, address: s.address, join_date: s.joinDate || null,
   parent_cccd: s.parentCccd || null, parent_tax_code: s.parentTaxCode || null,
+  fee_percent: s.feePercent ?? 100,
 });
 
 export const rowToReg = (r) => ({
@@ -71,17 +73,32 @@ export const regToRow = (r) => ({
 export const rowToPayment = (r) => ({
   id: r.id, studentId: r.student_id, classId: r.class_id, month: r.month, year: r.year,
   amount: Number(r.amount) || 0, paidDate: r.paid_date, status: r.status,
+  sessionsBilled: r.sessions_billed === null || r.sessions_billed === undefined ? undefined : Number(r.sessions_billed),
 });
 export const paymentToRow = (p) => ({
   id: p.id, student_id: p.studentId, class_id: p.classId, month: p.month, year: p.year,
   amount: p.amount, paid_date: p.paidDate || null, status: p.status,
+  sessions_billed: p.sessionsBilled ?? null,
 });
 
 export const rowToAttendance = (r) => ({
   id: r.id, classId: r.class_id, studentId: r.student_id, date: r.date, status: r.status, note: r.note || "",
+  billable: r.billable !== false,
 });
 export const attendanceToRow = (a) => ({
   id: a.id, class_id: a.classId, student_id: a.studentId, date: a.date, status: a.status, note: a.note || null,
+  billable: a.billable !== false,
+});
+
+export const rowToOverride = (r) => ({
+  id: r.id, classId: r.class_id, originalDate: r.original_date, status: r.status,
+  makeupDate: r.makeup_date, makeupStartTime: r.makeup_start_time, makeupEndTime: r.makeup_end_time,
+  makeupRoom: r.makeup_room, note: r.note || "",
+});
+export const overrideToRow = (o) => ({
+  id: o.id, class_id: o.classId, original_date: o.originalDate, status: o.status,
+  makeup_date: o.makeupDate || null, makeup_start_time: o.makeupStartTime || null, makeup_end_time: o.makeupEndTime || null,
+  makeup_room: o.makeupRoom || null, note: o.note || null,
 });
 
 export const rowToPayroll = (r) => ({
@@ -105,6 +122,7 @@ export const MAPPERS = {
   attendance: { toApp: rowToAttendance, toRow: attendanceToRow },
   payroll: { toApp: rowToPayroll, toRow: payrollToRow },
   activity_log: { toApp: rowToLog, toRow: logToRow },
+  session_overrides: { toApp: rowToOverride, toRow: overrideToRow },
 };
 
 // ═══════════════════ generic CRUD ═══════════════════
@@ -131,6 +149,11 @@ export async function upsertRows(table, appObjs, conflictCols) {
 }
 export async function deleteRow(table, id) {
   const { error } = await supabase.from(table).delete().eq("id", id);
+  if (error) throw error;
+}
+export async function deleteRows(table, ids) {
+  if (!ids.length) return;
+  const { error } = await supabase.from(table).delete().in("id", ids);
   if (error) throw error;
 }
 export async function deleteAll(table) {

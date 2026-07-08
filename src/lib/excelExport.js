@@ -44,7 +44,7 @@ const buildStudentRows = (data) => data.students.map((s) => {
   const n = data.registrations.filter((r) => r.studentId === s.id && r.status === "active").length;
   return {
     "Họ tên": s.name, "Khối": s.grade, "SĐT": s.phone, "Phụ huynh": s.parentName, "SĐT PH": s.parentPhone,
-    "CCCD PH": s.parentCccd || "", "MST PH": s.parentTaxCode || "",
+    "CCCD PH": s.parentCccd || "", "MST PH": s.parentTaxCode || "", "% học phí": s.feePercent ?? 100,
     "Địa chỉ": s.address, "Số lớp đang học": n, "Ngày nhập học": fmtDateVN(s.joinDate),
   };
 });
@@ -75,7 +75,10 @@ const buildAttendanceRows = (data) => (data.attendance || [])
   .map((a) => {
     const s = data.students.find((x) => x.id === a.studentId);
     const c = data.classes.find((x) => x.id === a.classId);
-    return { "Ngày": fmtDateVN(a.date), "Lớp": c?.name || "", "Học sinh": s?.name || "", "Trạng thái": ATT_LABEL[a.status] || a.status, "Ghi chú": a.note || "" };
+    return {
+      "Ngày": fmtDateVN(a.date), "Lớp": c?.name || "", "Học sinh": s?.name || "", "Trạng thái": ATT_LABEL[a.status] || a.status,
+      "Tính học phí": a.billable === false ? "Không" : "Có", "Ghi chú": a.note || "",
+    };
   });
 
 const buildPayrollRows = (data) => (data.payroll || [])
@@ -97,6 +100,19 @@ const buildActivityLogRows = (data) => (data.activity_log || [])
     "Nội dung": l.summary,
   }));
 
+const buildOverrideRows = (data) => (data.session_overrides || [])
+  .slice().sort((a, b) => (a.originalDate < b.originalDate ? 1 : -1))
+  .map((o) => {
+    const c = data.classes.find((x) => x.id === o.classId);
+    return {
+      "Lớp": c?.name || "", "Ngày gốc": fmtDateVN(o.originalDate),
+      "Trạng thái": o.status === "cancelled" ? "Nghỉ" : "Học bù",
+      "Ngày học bù": o.makeupDate ? fmtDateVN(o.makeupDate) : "",
+      "Giờ học bù": o.makeupStartTime ? `${o.makeupStartTime}-${o.makeupEndTime}` : "",
+      "Phòng học bù": o.makeupRoom || "", "Ghi chú": o.note || "",
+    };
+  });
+
 // ═══════════════════ export toàn bộ (nút ở sidebar) ═══════════════════
 export function exportFullWorkbook(data) {
   const wb = XLSX.utils.book_new();
@@ -106,6 +122,7 @@ export function exportFullWorkbook(data) {
   XLSX.utils.book_append_sheet(wb, sheetFrom(buildRegistrationRows(data)), "Đăng ký");
   XLSX.utils.book_append_sheet(wb, sheetFrom(buildPaymentRows(data)), "Học phí");
   XLSX.utils.book_append_sheet(wb, sheetFrom(buildAttendanceRows(data)), "Điểm danh");
+  XLSX.utils.book_append_sheet(wb, sheetFrom(buildOverrideRows(data)), "Nghỉ - Học bù");
   XLSX.utils.book_append_sheet(wb, sheetFrom(buildPayrollRows(data)), "Lương GV");
   XLSX.utils.book_append_sheet(wb, sheetFrom(buildActivityLogRows(data)), "Nhật ký");
   XLSX.writeFile(wb, `Foster-du-lieu-${todayTag()}.xlsx`);
@@ -146,27 +163,16 @@ export function exportDebtSummaryTab(debtList) {
 }
 
 // ═══════════════════ báo cáo học phí / lương / báo cáo tổng hợp ═══════════════════
-const DAY_CODE_BY_JSDAY = ["CN", "T2", "T3", "T4", "T5", "T6", "T7"];
-function sessionsInMonth(schedule, month, year) {
-  if (!schedule?.length) return 0;
-  const scheduledDays = new Set(schedule.map((s) => s.day));
-  const daysInMonth = new Date(year, month, 0).getDate();
-  let count = 0;
-  for (let d = 1; d <= daysInMonth; d++) {
-    if (scheduledDays.has(DAY_CODE_BY_JSDAY[new Date(year, month - 1, d).getDay()])) count++;
-  }
-  return count;
-}
 
-export function exportMonthlyPaymentReport(rows, month, year) {
-  const out = rows.map(({ s, cl, pay }) => ({
+export function exportMonthlyPaymentReport(rows) {
+  const out = rows.map(({ s, cl, pay, sessions, amount }) => ({
     "Học sinh": s.name, "Phụ huynh": s.parentName, "SĐT PH": s.parentPhone, "Lớp": cl.name,
-    "Số buổi": sessionsInMonth(cl.schedule, month, year),
-    "Học phí": pay?.amount ?? (cl.feePerSession * sessionsInMonth(cl.schedule, month, year)),
+    "Số buổi tính tiền": sessions, "% học phí": s.feePercent ?? 100,
+    "Học phí": amount,
     "Trạng thái": !pay ? "Chưa tạo" : pay.status === "paid" ? "Đã thu" : "Chưa thu",
     "Ngày thu": pay?.paidDate ? fmtDateVN(pay.paidDate) : "",
   }));
-  oneSheetWorkbook(out, `Thang ${month}-${year}`, `Foster-hoc-phi-T${month}-${year}.xlsx`);
+  oneSheetWorkbook(out, "Học phí", `Foster-hoc-phi-${todayTag()}.xlsx`);
 }
 
 export function exportMonthlyPayrollReport(rows, month, year) {

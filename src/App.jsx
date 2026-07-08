@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from "recharts";
 import { Home, BookOpen, Users, User, DollarSign, BarChart2, Plus, Edit2, Trash2, Search, X, CheckCircle, GraduationCap, AlertCircle, RefreshCw, Download, Upload, FileSpreadsheet, Wifi, WifiOff, FileUp, ClipboardCheck } from "lucide-react";
-import { supabase, fetchAll, insertRow, insertRows, updateRow, deleteRow, deleteAll, upsertRows, MAPPERS, signIn, signOut, getSession, getMyProfile } from "./lib/supabase.js";
+import { supabase, fetchAll, insertRow, insertRows, updateRow, deleteRow, deleteRows, deleteAll, upsertRows, MAPPERS, signIn, signOut, getSession, getMyProfile } from "./lib/supabase.js";
 import { LogOut, Lock, Wallet, History } from "lucide-react";
 import { exportFullWorkbook, exportMonthlyPaymentReport, exportSummaryReport, exportTeachersTab, exportClassesTab, exportStudentsTab, exportAttendanceTab, exportPayrollTab, exportActivityLogTab, exportDashboardTab, exportDebtSummaryTab, exportMonthlyPayrollReport } from "./lib/excelExport.js";
 import { parseStudentsExcel, parseTeachersExcel, downloadStudentTemplate, downloadTeacherTemplate } from "./lib/excelImport.js";
@@ -17,7 +17,7 @@ const GRADES = ["6", "7", "8", "9", "10", "11", "12"];
 const DAYS = ["T2", "T3", "T4", "T5", "T6", "T7", "CN"];
 const C = { navy: "#1B3A6B", amber: "#F5A623", blue: "#3B82F6", green: "#10B981", red: "#EF4444", purple: "#8B5CF6", bg: "#EFF3F8", border: "#E2E8F0", text: "#1E293B", muted: "#64748B" };
 const PIE_COLORS = [C.blue, C.green, C.purple, C.amber, C.red, "#06B6D4", "#EC4899", "#84CC16"];
-const TABLE_ORDER = ["teachers", "classes", "students", "registrations", "payments", "attendance", "payroll", "activity_log"];
+const TABLE_ORDER = ["teachers", "classes", "students", "registrations", "payments", "attendance", "payroll", "activity_log", "session_overrides"];
 const DAY_CODE_BY_JSDAY = ["CN", "T2", "T3", "T4", "T5", "T6", "T7"];
 const dayCodeOf = (dateStr) => { const [y, m, d] = dateStr.split("-").map(Number); return DAY_CODE_BY_JSDAY[new Date(y, m - 1, d).getDay()]; };
 const ATT_STATUS = { present: { label: "Có mặt", color: "#10B981" }, absent: { label: "Vắng", color: "#EF4444" }, late: { label: "Muộn", color: "#F5A623" }, excused: { label: "Có phép", color: "#8B5CF6" } };
@@ -37,6 +37,13 @@ function sessionsInMonth(schedule, month, year) {
     if (scheduledDays.has(DAY_CODE_BY_JSDAY[new Date(year, month - 1, d).getDay()])) count++;
   }
   return count;
+}
+// Số buổi TÍNH HỌC PHÍ thực tế của 1 học sinh trong 1 lớp, 1 tháng — dựa theo điểm danh thật,
+// trừ các buổi đã đánh dấu "không tính học phí" (billable=false). Đây là cơ sở tính tiền,
+// KHÔNG dùng số buổi theo lịch lý thuyết nữa.
+function billableSessionsInMonth(attendance, studentId, classId, month, year) {
+  const prefix = `${year}-${String(month).padStart(2, "0")}`;
+  return attendance.filter((a) => a.studentId === studentId && a.classId === classId && a.date.startsWith(prefix) && a.billable !== false).length;
 }
 const timesOverlap = (s1, e1, s2, e2) => s1 < e2 && s2 < e1;
 
@@ -73,6 +80,28 @@ function findScheduleConflicts(candidate, allClasses) {
   return conflicts;
 }
 const scheduleSummary = (schedule) => (schedule || []).map((s) => `${s.day} ${s.startTime}-${s.endTime} (${s.room})`).join(" · ");
+
+// Kiểm tra trùng phòng/giáo viên cho 1 buổi HỌC BÙ (1 lần, không lặp lại hàng tuần)
+function findMakeupConflicts(classId, teacherId, makeupDate, startTime, endTime, room, allClasses, allOverrides) {
+  const conflicts = [];
+  const dCode = dayCodeOf(makeupDate);
+  for (const other of allClasses) {
+    if (other.id === classId || other.status !== "active") continue;
+    for (const slot of other.schedule || []) {
+      if (slot.day !== dCode || !timesOverlap(startTime, endTime, slot.startTime, slot.endTime)) continue;
+      if (slot.room === room) conflicts.push(`Trùng PHÒNG ${room} với lịch cố định của lớp "${other.name}" (${dCode})`);
+      if (teacherId && teacherId === other.teacherId) conflicts.push(`Trùng GIÁO VIÊN với lịch cố định của lớp "${other.name}" (${dCode})`);
+    }
+  }
+  for (const o of allOverrides) {
+    if (o.status !== "makeup" || o.makeupDate !== makeupDate || o.classId === classId) continue;
+    if (!timesOverlap(startTime, endTime, o.makeupStartTime, o.makeupEndTime)) continue;
+    const otherCls = allClasses.find((c) => c.id === o.classId);
+    if (o.makeupRoom === room) conflicts.push(`Trùng PHÒNG ${room} với buổi học bù khác của lớp "${otherCls?.name || ""}"`);
+    if (teacherId && otherCls && teacherId === otherCls.teacherId) conflicts.push(`Trùng GIÁO VIÊN với buổi học bù khác của lớp "${otherCls?.name || ""}"`);
+  }
+  return conflicts;
+}
 
 // ═══════════════════════════════ SAMPLE DATA (used only for "reset") ═══════════════════════════════
 const SAMPLE_DATA = {
@@ -127,6 +156,7 @@ const SAMPLE_DATA = {
   attendance: [],
   payroll: [],
   activity_log: [],
+  session_overrides: [],
 };
 
 // ═══════════════════════════════ SHARED UI ═══════════════════════════════
@@ -725,14 +755,18 @@ function ImportPreview({ items, errors, warnings, itemNoun, color, onCancel, onC
 function StudentsView({ data, api, isAdmin }) {
   const [search, setSearch] = useState("");
   const [gradeFilter, setGradeFilter] = useState("");
+  const [classFilterSel, setClassFilterSel] = useState("");
+  const [selectedIds, setSelectedIds] = useState(new Set());
   const [modal, setModal] = useState(null);
   const [confirmDel, setConfirmDel] = useState(null);
+  const [confirmBulkDel, setConfirmBulkDel] = useState(false);
   const [importPreview, setImportPreview] = useState(null);
   const [importing, setImporting] = useState(false);
-  const blank = { name: "", phone: "", parentName: "", parentPhone: "", parentCccd: "", parentTaxCode: "", grade: "10", address: "", joinDate: todayStr() };
+  const blank = { name: "", phone: "", parentName: "", parentPhone: "", parentCccd: "", parentTaxCode: "", feePercent: 100, grade: "10", address: "", joinDate: todayStr() };
   const filtered = data.students
     .filter((s) => s.name.toLowerCase().includes(search.toLowerCase()) || s.phone.includes(search) || s.grade.includes(search))
-    .filter((s) => !gradeFilter || s.grade === gradeFilter);
+    .filter((s) => !gradeFilter || s.grade === gradeFilter)
+    .filter((s) => !classFilterSel || data.registrations.some((r) => r.studentId === s.id && r.classId === classFilterSel && r.status === "active"));
   const countCls = (id) => data.registrations.filter((r) => r.studentId === id && r.status === "active").length;
   const handleSave = async (s, newClassIds) => {
     setModal(null);
@@ -748,6 +782,14 @@ function StudentsView({ data, api, isAdmin }) {
     }
   };
   const handleDel = async (id) => { setConfirmDel(null); await api.deleteStudent(id, data.students.find((s) => s.id === id)?.name); };
+  const toggleSelect = (id) => setSelectedIds((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const allVisibleSelected = filtered.length > 0 && filtered.every((s) => selectedIds.has(s.id));
+  const toggleSelectAll = () => setSelectedIds(allVisibleSelected ? new Set() : new Set(filtered.map((s) => s.id)));
+  const handleBulkDelete = async () => {
+    setConfirmBulkDel(false);
+    await api.deleteStudents([...selectedIds]);
+    setSelectedIds(new Set());
+  };
   const startImport = () => pickExcelFile(async (file) => {
     try {
       const parsed = await parseStudentsExcel(file);
@@ -785,22 +827,38 @@ function StudentsView({ data, api, isAdmin }) {
             <option value="">Tất cả khối</option>
             {GRADES.map((g) => <option key={g} value={g}>Lớp {g}</option>)}
           </select>
+          <select value={classFilterSel} onChange={(e) => setClassFilterSel(e.target.value)} style={{ padding: "8px 12px", borderRadius: 8, border: `1.5px solid ${C.border}`, fontSize: 14, outline: "none" }}>
+            <option value="">Tất cả lớp</option>
+            {data.classes.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
           <Btn color={C.green} onClick={() => setModal({ student: { ...blank } })}><Plus size={15} />Thêm học sinh</Btn>
           <Btn color={C.green} outlined onClick={() => exportStudentsTab(data)}><FileSpreadsheet size={15} />Xuất Excel</Btn>
           <Btn color={C.blue} outlined onClick={startImport}><FileUp size={15} />Nhập Excel</Btn>
+          {isAdmin && selectedIds.size > 0 && (
+            <Btn color={C.red} onClick={() => setConfirmBulkDel(true)}><Trash2 size={15} />Xóa {selectedIds.size} đã chọn</Btn>
+          )}
         </div>
       }>
         <div style={{ overflowX: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
-            <thead><tr style={{ background: C.bg }}>{["Họ tên", "Khối", "SĐT", "Phụ huynh", "SĐT PH", "Lớp đăng ký", ""].map((h, i) => <Th key={i}>{h}</Th>)}</tr></thead>
+            <thead><tr style={{ background: C.bg }}>
+              <Th><input type="checkbox" checked={allVisibleSelected} onChange={toggleSelectAll} /></Th>
+              {["Họ tên", "Khối", "SĐT", "Phụ huynh", "SĐT PH", "% học phí", "Lớp đăng ký", ""].map((h, i) => <Th key={i}>{h}</Th>)}
+            </tr></thead>
             <tbody>
               {filtered.map((s) => (
-                <tr key={s.id} style={{ borderBottom: `1px solid ${C.border}` }} onMouseEnter={(e) => (e.currentTarget.style.background = "#f8fafc")} onMouseLeave={(e) => (e.currentTarget.style.background = "")}>
+                <tr key={s.id} style={{ borderBottom: `1px solid ${C.border}`, background: selectedIds.has(s.id) ? C.blue + "0a" : undefined }} onMouseEnter={(e) => (e.currentTarget.style.background = selectedIds.has(s.id) ? "" : "#f8fafc")} onMouseLeave={(e) => (e.currentTarget.style.background = selectedIds.has(s.id) ? C.blue + "0a" : "")}>
+                  <Td><input type="checkbox" checked={selectedIds.has(s.id)} onChange={() => toggleSelect(s.id)} /></Td>
                   <Td style={{ fontWeight: 700, color: C.text }}>{s.name}</Td>
                   <Td><Badge color={C.purple}>Lớp {s.grade}</Badge></Td>
                   <Td style={{ color: C.text }}>{s.phone || "—"}</Td>
                   <Td style={{ color: C.text }}>{s.parentName}</Td>
                   <Td style={{ color: C.text }}>{s.parentPhone}</Td>
+                  <Td>
+                    {(s.feePercent ?? 100) === 100
+                      ? <span style={{ color: C.muted, fontSize: 13 }}>100%</span>
+                      : <Badge color={(s.feePercent ?? 100) === 0 ? C.red : C.amber}>{s.feePercent}%{(s.feePercent ?? 100) === 0 ? " · Miễn" : " · Giảm"}</Badge>}
+                  </Td>
                   <Td>
                     <button onClick={() => setModal({ student: { ...s } })} style={{ background: C.blue + "18", border: "none", borderRadius: 6, padding: "4px 12px", cursor: "pointer", color: C.blue, fontWeight: 700, fontSize: 13 }}>
                       {countCls(s.id)} lớp
@@ -812,7 +870,7 @@ function StudentsView({ data, api, isAdmin }) {
                   </div></Td>
                 </tr>
               ))}
-              {!filtered.length && <tr><td colSpan={7} style={{ padding: "32px", textAlign: "center", color: C.muted }}>Không tìm thấy học sinh</td></tr>}
+              {!filtered.length && <tr><td colSpan={9} style={{ padding: "32px", textAlign: "center", color: C.muted }}>Không tìm thấy học sinh</td></tr>}
             </tbody>
           </table>
         </div>
@@ -823,6 +881,10 @@ function StudentsView({ data, api, isAdmin }) {
       <Modal open={!!confirmDel} onClose={() => setConfirmDel(null)} title="Xác nhận xóa học sinh">
         <p style={{ color: C.text, marginBottom: 20 }}>Xóa học sinh sẽ xóa toàn bộ đăng ký lớp và lịch sử học phí. Tiếp tục?</p>
         <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}><Btn color={C.muted} outlined onClick={() => setConfirmDel(null)}>Hủy</Btn><Btn color={C.red} onClick={() => handleDel(confirmDel)}>Xóa</Btn></div>
+      </Modal>
+      <Modal open={confirmBulkDel} onClose={() => setConfirmBulkDel(false)} title="Xác nhận xóa hàng loạt">
+        <p style={{ color: C.text, marginBottom: 20 }}>Xóa <b>{selectedIds.size}</b> học sinh đã chọn — cùng toàn bộ đăng ký lớp và lịch sử học phí của họ. Không thể hoàn tác. Tiếp tục?</p>
+        <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}><Btn color={C.muted} outlined onClick={() => setConfirmBulkDel(false)}>Hủy</Btn><Btn color={C.red} onClick={handleBulkDelete}>Xóa {selectedIds.size} học sinh</Btn></div>
       </Modal>
       <Modal open={!!importPreview} onClose={() => setImportPreview(null)} title="Nhập danh sách học sinh từ Excel">
         {importPreview && <ImportPreview items={importPreview.students} errors={importPreview.errors} warnings={importPreview.warnings} showClasses itemNoun="học sinh" color={C.green} busy={importing} onCancel={() => setImportPreview(null)} onConfirm={confirmImport} />}
@@ -850,6 +912,8 @@ function StudentForm({ student, data, api, onSave, onCancel }) {
         <Inp label="SĐT phụ huynh *" value={f.parentPhone} onChange={(e) => set("parentPhone", e.target.value)} placeholder="09xxxxxxxx" />
         <Inp label="Số CCCD phụ huynh" value={f.parentCccd} onChange={(e) => set("parentCccd", e.target.value)} placeholder="Phục vụ xuất hóa đơn" />
         <Inp label="Mã số thuế phụ huynh (nếu có)" value={f.parentTaxCode} onChange={(e) => set("parentTaxCode", e.target.value)} placeholder="Để trống nếu không có" />
+        <Inp label="% học phí phải đóng" type="number" value={f.feePercent ?? 100} onChange={(e) => set("feePercent", +e.target.value)} placeholder="100" />
+        <div style={{ display: "flex", alignItems: "flex-end", paddingBottom: 9, fontSize: 12, color: C.muted }}>100% = bình thường · 50% = giảm nửa · 0% = miễn học phí</div>
         <div style={{ gridColumn: "1/-1" }}><Inp label="Địa chỉ" value={f.address} onChange={(e) => set("address", e.target.value)} placeholder="Số nhà, đường, quận" /></div>
         <Inp label="Ngày nhập học" type="date" value={f.joinDate} onChange={(e) => set("joinDate", e.target.value)} />
       </div>
@@ -1028,10 +1092,12 @@ function AttendanceView({ data, api }) {
   const [statusMap, setStatusMap] = useState({});
   const [saving, setSaving] = useState(false);
   const [viewFilter, setViewFilter] = useState("all"); // all | present | absent | late | excused
+  const [makeupForm, setMakeupForm] = useState(null); // {date, startTime, endTime, room, note} khi đang mở form xếp học bù
 
   const dayCode = dayCodeOf(date);
   const activeClasses = data.classes.filter((c) => c.status === "active");
-  const relevantClasses = showAllClasses ? activeClasses : activeClasses.filter((c) => (c.schedule || []).some((s) => s.day === dayCode));
+  const makeupTargetClassIds = new Set(data.session_overrides.filter((o) => o.status === "makeup" && o.makeupDate === date).map((o) => o.classId));
+  const relevantClasses = showAllClasses ? activeClasses : activeClasses.filter((c) => (c.schedule || []).some((s) => s.day === dayCode) || makeupTargetClassIds.has(c.id));
   const classList = relevantClasses.length ? relevantClasses : activeClasses; // fallback if nothing scheduled that day
 
   useEffect(() => {
@@ -1046,13 +1112,22 @@ function AttendanceView({ data, api }) {
         .sort((a, b) => a.name.localeCompare(b.name, "vi"))
     : [];
 
+  // Buổi này (classId+date) có đang bị đánh dấu Nghỉ hoặc đã chuyển học bù đi nơi khác không
+  const override = data.session_overrides.find((o) => o.classId === classId && o.originalDate === date);
+  // Buổi này có PHẢI LÀ đích đến của 1 buổi học bù từ ngày khác chuyển sang không
+  const makeupSource = data.session_overrides.find((o) => o.classId === classId && o.status === "makeup" && o.makeupDate === date);
+  const isCancelled = override?.status === "cancelled";
+  const isMoved = override?.status === "makeup";
+  const blocked = isCancelled || isMoved; // không điểm danh được ở 2 trạng thái này
+
   const existing = {};
   data.attendance.filter((a) => a.classId === classId && a.date === date).forEach((a) => { existing[a.studentId] = a; });
 
   useEffect(() => {
     const m = {};
-    roster.forEach((s) => { const ex = existing[s.id]; m[s.id] = { status: ex?.status || "present", note: ex?.note || "" }; });
+    roster.forEach((s) => { const ex = existing[s.id]; m[s.id] = { status: ex?.status || "present", note: ex?.note || "", billable: ex ? ex.billable !== false : true }; });
     setStatusMap(m);
+    setMakeupForm(null);
     // Chỉ nạp lại khi đổi LỚP hoặc NGÀY — không nạp lại mỗi khi data.attendance đổi,
     // vì realtime đồng bộ có thể trả về ngay sau khi Lưu và ghi đè các lựa chọn đang
     // sửa dở trên màn hình (bug đã gặp: mọi học sinh bị trả về "Có mặt" sau khi Lưu).
@@ -1061,17 +1136,37 @@ function AttendanceView({ data, api }) {
 
   const setStatus = (sid, status) => setStatusMap((m) => ({ ...m, [sid]: { ...m[sid], status } }));
   const setNote = (sid, note) => setStatusMap((m) => ({ ...m, [sid]: { ...m[sid], note } }));
+  const setBillable = (sid, billable) => setStatusMap((m) => ({ ...m, [sid]: { ...m[sid], billable } }));
   const markAll = (status) => setStatusMap((m) => { const n = { ...m }; roster.forEach((s) => { n[s.id] = { ...n[s.id], status }; }); return n; });
 
   const save = async () => {
-    if (!roster.length) return;
+    if (!roster.length || blocked) return;
     setSaving(true);
     const rows = roster.map((s) => ({
       id: existing[s.id]?.id || genId(), classId, studentId: s.id, date,
       status: statusMap[s.id]?.status || "present", note: statusMap[s.id]?.note || "",
+      billable: statusMap[s.id]?.billable !== false,
     }));
     await api.saveAttendance(rows);
     setSaving(false);
+  };
+
+  const markCancelled = async () => {
+    if (!confirm(`Đánh dấu lớp "${cls.name}" NGHỈ vào ${fmtDate(date)}? Buổi này sẽ không tính học phí và không tính lương giáo viên.`)) return;
+    await api.saveSessionOverride({ id: override?.id || genId(), classId, originalDate: date, status: "cancelled", makeupDate: null, makeupStartTime: null, makeupEndTime: null, makeupRoom: null, note: "" }, `Đánh dấu nghỉ: ${cls.name} (${fmtDate(date)})`);
+  };
+  const clearOverride = async () => { if (override) await api.deleteSessionOverride(override.id); };
+  const openMakeupForm = () => setMakeupForm({ date: "", startTime: cls?.schedule?.[0]?.startTime || "17:30", endTime: cls?.schedule?.[0]?.endTime || "19:00", room: ROOMS[0], note: "" });
+  const saveMakeup = async () => {
+    if (!makeupForm.date) return alert("Chọn ngày học bù!");
+    if (makeupForm.date === date) return alert("Ngày học bù phải khác ngày gốc!");
+    const conflicts = findMakeupConflicts(classId, cls.teacherId, makeupForm.date, makeupForm.startTime, makeupForm.endTime, makeupForm.room, data.classes, data.session_overrides.filter((o) => o.id !== override?.id));
+    if (conflicts.length) return alert(`❌ Không thể xếp — trùng lịch:\n\n${conflicts.join("\n")}`);
+    await api.saveSessionOverride({
+      id: override?.id || genId(), classId, originalDate: date, status: "makeup",
+      makeupDate: makeupForm.date, makeupStartTime: makeupForm.startTime, makeupEndTime: makeupForm.endTime, makeupRoom: makeupForm.room, note: makeupForm.note,
+    }, `Chuyển học bù: ${cls.name} (${fmtDate(date)} → ${fmtDate(makeupForm.date)})`);
+    setMakeupForm(null);
   };
 
   const counts = { present: 0, absent: 0, late: 0, excused: 0 };
@@ -1102,47 +1197,101 @@ function AttendanceView({ data, api }) {
         )}
         {cls && (
           <>
-            <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
-              {Object.entries(ATT_STATUS).map(([key, v]) => (
-                <button key={key} onClick={() => setViewFilter(viewFilter === key ? "all" : key)}
-                  style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 12px", borderRadius: 8, background: v.color + "15", border: viewFilter === key ? `1.5px solid ${v.color}` : "1.5px solid transparent", cursor: "pointer" }}>
-                  <span style={{ width: 8, height: 8, borderRadius: 99, background: v.color }} />
-                  <span style={{ fontSize: 13, color: C.text }}>{v.label}: <b>{counts[key] || 0}</b></span>
-                </button>
-              ))}
-              {viewFilter !== "all" && <Btn color={C.muted} outlined style={{ padding: "5px 12px", fontSize: 12.5 }} onClick={() => setViewFilter("all")}>✕ Bỏ lọc</Btn>}
-              {alreadySaved && <Badge color={C.blue}>Đã lưu điểm danh buổi này</Badge>}
-            </div>
-            <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
-              <Btn color={C.green} outlined style={{ padding: "6px 12px", fontSize: 13 }} onClick={() => markAll("present")}>Đánh dấu tất cả Có mặt</Btn>
-            </div>
-            <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, overflow: "hidden" }}>
-              {visibleRoster.map((s, i) => {
-                const st = statusMap[s.id]?.status || "present";
-                return (
-                  <div key={s.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", borderBottom: i < visibleRoster.length - 1 ? `1px solid ${C.border}` : "none", flexWrap: "wrap" }}>
-                    <div style={{ minWidth: 160, fontWeight: 700, color: C.text, fontSize: 14 }}>{s.name}</div>
-                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                      {Object.entries(ATT_STATUS).map(([key, v]) => (
-                        <button key={key} onClick={() => setStatus(s.id, key)}
-                          style={{ padding: "5px 12px", borderRadius: 7, fontSize: 12.5, fontWeight: 600, cursor: "pointer", border: `1.5px solid ${st === key ? v.color : C.border}`, background: st === key ? v.color + "18" : "#fff", color: st === key ? v.color : C.muted }}>
-                          {v.label}
-                        </button>
-                      ))}
-                    </div>
-                    <input placeholder="Ghi chú (tùy chọn)" value={statusMap[s.id]?.note || ""} onChange={(e) => setNote(s.id, e.target.value)}
-                      style={{ flex: 1, minWidth: 140, padding: "6px 10px", borderRadius: 7, border: `1px solid ${C.border}`, fontSize: 12.5, outline: "none" }} />
-                  </div>
-                );
-              })}
-              {!roster.length && <div style={{ padding: "32px", textAlign: "center", color: C.muted }}>Lớp này chưa có học sinh đăng ký</div>}
-              {roster.length > 0 && !visibleRoster.length && <div style={{ padding: "32px", textAlign: "center", color: C.muted }}>Không có học sinh nào khớp bộ lọc</div>}
-            </div>
-            {roster.length > 0 && (
-              <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 16 }}>
-                <Btn color={C.blue} onClick={save} style={{ opacity: saving ? 0.6 : 1 }}>{saving ? "Đang lưu..." : "💾 Lưu điểm danh"}</Btn>
+            {makeupSource && (
+              <div style={{ marginBottom: 14, padding: 10, background: C.purple + "15", borderRadius: 8, fontSize: 13, color: "#5b21b6" }}>
+                🔁 Đây là buổi <b>học bù</b> cho ngày gốc {fmtDate(makeupSource.originalDate)} (Phòng {makeupSource.makeupRoom}). Điểm danh bình thường như buổi chính thức.
               </div>
             )}
+
+            <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
+              <button onClick={clearOverride} disabled={!override} style={{ padding: "7px 14px", borderRadius: 8, border: `1.5px solid ${!override ? C.blue : C.border}`, background: !override ? C.blue + "18" : "#fff", color: !override ? C.blue : C.muted, fontWeight: 600, fontSize: 13, cursor: override ? "pointer" : "default" }}>Học bình thường</button>
+              <button onClick={markCancelled} style={{ padding: "7px 14px", borderRadius: 8, border: `1.5px solid ${isCancelled ? C.red : C.border}`, background: isCancelled ? C.red + "18" : "#fff", color: isCancelled ? C.red : C.muted, fontWeight: 600, fontSize: 13, cursor: "pointer" }}>Nghỉ</button>
+              <button onClick={openMakeupForm} style={{ padding: "7px 14px", borderRadius: 8, border: `1.5px solid ${isMoved ? C.purple : C.border}`, background: isMoved ? C.purple + "18" : "#fff", color: isMoved ? C.purple : C.muted, fontWeight: 600, fontSize: 13, cursor: "pointer" }}>Chuyển học bù</button>
+            </div>
+
+            {isCancelled && (
+              <div style={{ padding: 16, background: C.red + "0d", borderRadius: 10, marginBottom: 16, color: C.red, fontSize: 14 }}>
+                ⛔ Lớp <b>{cls.name}</b> đã NGHỈ vào {fmtDate(date)} — không tính học phí, không tính lương giáo viên cho buổi này. Bấm "Học bình thường" ở trên nếu đánh dấu nhầm.
+              </div>
+            )}
+
+            {isMoved && (
+              <div style={{ padding: 16, background: C.purple + "0d", borderRadius: 10, marginBottom: 16, color: "#5b21b6", fontSize: 14 }}>
+                🔁 Buổi học ngày {fmtDate(date)} đã <b>chuyển học bù</b> sang <b>{fmtDate(override.makeupDate)}</b>, {override.makeupStartTime}–{override.makeupEndTime}, Phòng {override.makeupRoom}.
+                {override.note && <div style={{ marginTop: 4, fontStyle: "italic" }}>Ghi chú: {override.note}</div>}
+                <div style={{ marginTop: 8 }}><Btn color={C.purple} outlined style={{ padding: "5px 12px", fontSize: 12.5 }} onClick={openMakeupForm}>Sửa thông tin học bù</Btn></div>
+              </div>
+            )}
+
+            {makeupForm && (
+              <div style={{ padding: 16, background: C.bg, borderRadius: 10, marginBottom: 16 }}>
+                <div style={{ fontWeight: 700, marginBottom: 10, color: C.text }}>Xếp lịch học bù cho lớp {cls.name} (thay cho buổi {fmtDate(date)})</div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 8, marginBottom: 10 }}>
+                  <input type="date" value={makeupForm.date} onChange={(e) => setMakeupForm((f) => ({ ...f, date: e.target.value }))} style={{ padding: "7px 8px", borderRadius: 7, border: `1px solid ${C.border}`, fontSize: 13 }} />
+                  <input type="time" value={makeupForm.startTime} onChange={(e) => setMakeupForm((f) => ({ ...f, startTime: e.target.value }))} style={{ padding: "7px 8px", borderRadius: 7, border: `1px solid ${C.border}`, fontSize: 13 }} />
+                  <input type="time" value={makeupForm.endTime} onChange={(e) => setMakeupForm((f) => ({ ...f, endTime: e.target.value }))} style={{ padding: "7px 8px", borderRadius: 7, border: `1px solid ${C.border}`, fontSize: 13 }} />
+                  <select value={makeupForm.room} onChange={(e) => setMakeupForm((f) => ({ ...f, room: e.target.value }))} style={{ padding: "7px 8px", borderRadius: 7, border: `1px solid ${C.border}`, fontSize: 13 }}>
+                    {ROOMS.map((r) => <option key={r} value={r}>{r}</option>)}
+                  </select>
+                </div>
+                <input placeholder="Ghi chú (tùy chọn)" value={makeupForm.note} onChange={(e) => setMakeupForm((f) => ({ ...f, note: e.target.value }))} style={{ width: "100%", padding: "7px 10px", borderRadius: 7, border: `1px solid ${C.border}`, fontSize: 13, marginBottom: 10, boxSizing: "border-box" }} />
+                <div style={{ display: "flex", gap: 8 }}>
+                  <Btn color={C.muted} outlined style={{ padding: "6px 14px", fontSize: 13 }} onClick={() => setMakeupForm(null)}>Hủy</Btn>
+                  <Btn color={C.purple} style={{ padding: "6px 14px", fontSize: 13 }} onClick={saveMakeup}>Lưu học bù</Btn>
+                </div>
+              </div>
+            )}
+
+            {!blocked && <>
+              <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
+                {Object.entries(ATT_STATUS).map(([key, v]) => (
+                  <button key={key} onClick={() => setViewFilter(viewFilter === key ? "all" : key)}
+                    style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 12px", borderRadius: 8, background: v.color + "15", border: viewFilter === key ? `1.5px solid ${v.color}` : "1.5px solid transparent", cursor: "pointer" }}>
+                    <span style={{ width: 8, height: 8, borderRadius: 99, background: v.color }} />
+                    <span style={{ fontSize: 13, color: C.text }}>{v.label}: <b>{counts[key] || 0}</b></span>
+                  </button>
+                ))}
+                {viewFilter !== "all" && <Btn color={C.muted} outlined style={{ padding: "5px 12px", fontSize: 12.5 }} onClick={() => setViewFilter("all")}>✕ Bỏ lọc</Btn>}
+                {alreadySaved && <Badge color={C.blue}>Đã lưu điểm danh buổi này</Badge>}
+              </div>
+              <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+                <Btn color={C.green} outlined style={{ padding: "6px 12px", fontSize: 13 }} onClick={() => markAll("present")}>Đánh dấu tất cả Có mặt</Btn>
+              </div>
+              <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, overflow: "hidden" }}>
+                {visibleRoster.map((s, i) => {
+                  const st = statusMap[s.id]?.status || "present";
+                  const billable = statusMap[s.id]?.billable !== false;
+                  return (
+                    <div key={s.id} style={{ padding: "12px 14px", borderBottom: i < visibleRoster.length - 1 ? `1px solid ${C.border}` : "none" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                        <div style={{ minWidth: 160, fontWeight: 700, color: C.text, fontSize: 14 }}>{s.name}</div>
+                        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                          {Object.entries(ATT_STATUS).map(([key, v]) => (
+                            <button key={key} onClick={() => setStatus(s.id, key)}
+                              style={{ padding: "5px 12px", borderRadius: 7, fontSize: 12.5, fontWeight: 600, cursor: "pointer", border: `1.5px solid ${st === key ? v.color : C.border}`, background: st === key ? v.color + "18" : "#fff", color: st === key ? v.color : C.muted }}>
+                              {v.label}
+                            </button>
+                          ))}
+                        </div>
+                        <label style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 12.5, color: !billable ? C.red : C.muted, cursor: "pointer", fontWeight: !billable ? 700 : 400 }}>
+                          <input type="checkbox" checked={!billable} onChange={(e) => setBillable(s.id, !e.target.checked)} />
+                          Không tính học phí
+                        </label>
+                        <input placeholder="Ghi chú (tùy chọn)" value={statusMap[s.id]?.note || ""} onChange={(e) => setNote(s.id, e.target.value)}
+                          style={{ flex: 1, minWidth: 140, padding: "6px 10px", borderRadius: 7, border: `1px solid ${!billable ? C.red : C.border}`, fontSize: 12.5, outline: "none" }} />
+                      </div>
+                    </div>
+                  );
+                })}
+                {!roster.length && <div style={{ padding: "32px", textAlign: "center", color: C.muted }}>Lớp này chưa có học sinh đăng ký</div>}
+                {roster.length > 0 && !visibleRoster.length && <div style={{ padding: "32px", textAlign: "center", color: C.muted }}>Không có học sinh nào khớp bộ lọc</div>}
+              </div>
+              {roster.length > 0 && (
+                <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 16 }}>
+                  <Btn color={C.blue} onClick={save} style={{ opacity: saving ? 0.6 : 1 }}>{saving ? "Đang lưu..." : "💾 Lưu điểm danh"}</Btn>
+                </div>
+              )}
+            </>}
           </>
         )}
         {!cls && <div style={{ padding: "32px", textAlign: "center", color: C.muted }}>Chưa có lớp học nào — vào tab Lớp học để tạo trước</div>}
@@ -1160,21 +1309,27 @@ function PaymentsView({ data, api }) {
   const [viewMode, setViewMode] = useState("monthly"); // monthly | debt
   const activeRegs = data.registrations.filter((r) => r.status === "active");
   const mPays = data.payments.filter((p) => p.month === month && p.year === year);
-  const amountFor = (cl) => cl.feePerSession * sessionsInMonth(cl.schedule, month, year);
+  const liveSessionsFor = (studentId, classId) => billableSessionsInMonth(data.attendance, studentId, classId, month, year);
+  const amountFor = (cl, student, sessions) => Math.round(cl.feePerSession * sessions * ((student.feePercent ?? 100) / 100));
 
   const rows = activeRegs.map((r) => {
     const s = data.students.find((x) => x.id === r.studentId);
     const cl = data.classes.find((x) => x.id === r.classId);
     if (!s || !cl) return null;
     const pay = mPays.find((p) => p.studentId === r.studentId && p.classId === r.classId);
-    return { r, s, cl, pay };
+    const liveSessions = liveSessionsFor(r.studentId, r.classId);
+    // Đã có bản ghi (pay) thì hiện đúng số đã CHỐT lúc tạo/thu tiền; chưa có thì hiện số dự kiến theo điểm danh hiện tại.
+    const sessions = pay ? pay.sessionsBilled ?? liveSessions : liveSessions;
+    const amount = pay ? pay.amount : amountFor(cl, s, liveSessions);
+    const stale = pay && pay.status === "unpaid" && pay.sessionsBilled !== undefined && pay.sessionsBilled !== liveSessions;
+    return { r, s, cl, pay, sessions, liveSessions, amount, stale };
   }).filter(Boolean)
     .filter((row) => row.s.name.toLowerCase().includes(search.toLowerCase()) || row.cl.name.toLowerCase().includes(search.toLowerCase()))
     .filter((row) => !statusFilter || (statusFilter === "paid" ? row.pay?.status === "paid" : row.pay?.status !== "paid"));
 
-  const totalExpected = rows.reduce((sum, r) => sum + (r.pay?.amount ?? amountFor(r.cl)), 0);
+  const totalExpected = rows.reduce((sum, r) => sum + r.amount, 0);
   const totalPaid = rows.filter((r) => r.pay?.status === "paid").reduce((sum, r) => sum + r.pay.amount, 0);
-  const totalUnpaid = rows.filter((r) => !r.pay || r.pay.status === "unpaid").reduce((sum, r) => sum + (r.pay?.amount ?? amountFor(r.cl)), 0);
+  const totalUnpaid = rows.filter((r) => !r.pay || r.pay.status === "unpaid").reduce((sum, r) => sum + r.amount, 0);
   const unpaidCount = rows.filter((r) => !r.pay || r.pay.status === "unpaid").length;
 
   // ── Công nợ tổng hợp: cộng dồn TẤT CẢ các khoản chưa thu, mọi tháng/năm ──
@@ -1193,25 +1348,26 @@ function PaymentsView({ data, api }) {
   const markPaid = async (row) => {
     const label = `${row.s.name} - ${row.cl.name} (T${month}/${year})`;
     if (row.pay) await api.updatePaymentStatus(row.pay.id, "paid", todayStr(), label);
-    else await api.addPayment({ id: genId(), studentId: row.s.id, classId: row.cl.id, month, year, amount: amountFor(row.cl), paidDate: todayStr(), status: "paid" });
+    else await api.addPayment({ id: genId(), studentId: row.s.id, classId: row.cl.id, month, year, amount: row.amount, sessionsBilled: row.liveSessions, paidDate: todayStr(), status: "paid" });
   };
   const markUnpaid = async (row) => { if (row.pay) await api.updatePaymentStatus(row.pay.id, "unpaid", null, `${row.s.name} - ${row.cl.name} (T${month}/${year})`); };
   const generate = async () => {
-    const ex = new Set(mPays.map((p) => `${p.studentId}-${p.classId}`));
-    const news = activeRegs.filter((r) => { const cl = data.classes.find((c) => c.id === r.classId); return cl && !ex.has(`${r.studentId}-${r.classId}`); })
-      .map((r) => { const cl = data.classes.find((c) => c.id === r.classId); return { id: genId(), studentId: r.studentId, classId: r.classId, month, year, amount: amountFor(cl), paidDate: null, status: "unpaid" }; });
-    if (!news.length) return alert("Đã có đầy đủ bản ghi cho tháng này!");
-    await api.addPayments(news);
+    // Tạo mới cho ai chưa có bản ghi; CẬP NHẬT lại cho bản ghi CHƯA THU nếu điểm danh đã thay đổi so với lúc tạo.
+    // Không bao giờ đụng vào bản ghi đã "Đã thu" (giữ nguyên lịch sử).
+    const toUpsert = rows.filter((row) => !row.pay || (row.pay.status === "unpaid" && row.stale))
+      .map((row) => ({ id: row.pay?.id || genId(), studentId: row.s.id, classId: row.cl.id, month, year, amount: amountFor(row.cl, row.s, row.liveSessions), sessionsBilled: row.liveSessions, paidDate: null, status: "unpaid" }));
+    if (!toUpsert.length) return alert("Không có gì cần tạo/cập nhật — mọi bản ghi đã khớp với điểm danh mới nhất.");
+    await api.addPayments(toUpsert);
   };
   const markAllPaid = async () => {
     const unpaidRows = rows.filter((r) => !r.pay || r.pay.status === "unpaid");
     if (!unpaidRows.length) return alert("Không có khoản nào đang \"Chưa thu\" trong danh sách hiện tại.");
-    const total = unpaidRows.reduce((s, r) => s + (r.pay?.amount ?? amountFor(r.cl)), 0);
+    const total = unpaidRows.reduce((s, r) => s + r.amount, 0);
     if (!confirm(`Đánh dấu ĐÃ THU cho ${unpaidRows.length} học sinh (đang hiện trong bảng), tổng ${fmtMoney(total)}?\n\nChỉ áp dụng cho các dòng đang hiển thị theo bộ lọc hiện tại.`)) return;
     const paidDate = todayStr();
     const toUpsert = unpaidRows.map((r) => ({
       id: r.pay?.id || genId(), studentId: r.s.id, classId: r.cl.id, month, year,
-      amount: r.pay?.amount ?? amountFor(r.cl), paidDate, status: "paid",
+      amount: r.amount, sessionsBilled: r.liveSessions, paidDate, status: "paid",
     }));
     await api.addPayments(toUpsert);
   };
@@ -1245,7 +1401,7 @@ function PaymentsView({ data, api }) {
               <input placeholder="Tìm..." value={search} onChange={(e) => setSearch(e.target.value)} style={{ padding: "7px 12px 7px 30px", borderRadius: 8, border: `1.5px solid ${C.border}`, fontSize: 14, width: 140, outline: "none" }} /></div>
             <Btn color={C.blue} onClick={generate}><RefreshCw size={14} />Tạo bản ghi</Btn>
             <Btn color={C.green} onClick={markAllPaid}><CheckCircle size={14} />Đánh dấu đã thu tất cả</Btn>
-            <Btn color={C.green} onClick={() => exportMonthlyPaymentReport(rows, month, year)}><FileSpreadsheet size={14} />Xuất Excel</Btn>
+            <Btn color={C.green} onClick={() => exportMonthlyPaymentReport(rows)}><FileSpreadsheet size={14} />Xuất Excel</Btn>
           </>}
           {viewMode === "debt" && (
             <Btn color={C.green} onClick={() => exportDebtSummaryTab(debtList)}><FileSpreadsheet size={14} />Xuất Excel</Btn>
@@ -1253,16 +1409,24 @@ function PaymentsView({ data, api }) {
         </div>
       }>
         {viewMode === "monthly" ? (
+          <div>
+          <div style={{ marginBottom: 14, padding: 10, background: C.blue + "10", borderRadius: 8, fontSize: 12.5, color: C.navy }}>
+            💡 Học phí tính theo <b>điểm danh thực tế</b> (trừ các buổi đánh dấu "không tính học phí"), nhân với <b>% học phí</b> riêng của từng học sinh. Lớp/học sinh nào chưa điểm danh đủ trong tháng sẽ chưa được tính đủ tiền.
+          </div>
           <div style={{ overflowX: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
-              <thead><tr style={{ background: C.bg }}>{["Học sinh", "Lớp", "Số buổi", "Học phí", "Trạng thái", "Ngày thu", "Thao tác"].map((h, i) => <Th key={i}>{h}</Th>)}</tr></thead>
+              <thead><tr style={{ background: C.bg }}>{["Học sinh", "Lớp", "Số buổi", "% học phí", "Học phí", "Trạng thái", "Ngày thu", "Thao tác"].map((h, i) => <Th key={i}>{h}</Th>)}</tr></thead>
               <tbody>
                 {rows.map((row, i) => (
                   <tr key={i} style={{ borderBottom: `1px solid ${C.border}` }} onMouseEnter={(e) => (e.currentTarget.style.background = "#f8fafc")} onMouseLeave={(e) => (e.currentTarget.style.background = "")}>
                     <Td style={{ fontWeight: 700, color: C.text }}>{row.s.name}</Td>
                     <Td><Badge color={C.blue}>{row.cl.name}</Badge></Td>
-                    <Td style={{ color: C.muted }}>{sessionsInMonth(row.cl.schedule, month, year)} buổi</Td>
-                    <Td style={{ fontWeight: 700, color: C.amber }}>{fmtMoney(row.pay?.amount ?? amountFor(row.cl))}</Td>
+                    <Td style={{ color: C.muted }}>
+                      {row.sessions} buổi
+                      {row.stale && <span title={`Điểm danh mới nhất cho thấy ${row.liveSessions} buổi — bấm "Tạo bản ghi" để cập nhật`} style={{ marginLeft: 6, color: C.amber, fontSize: 11, fontWeight: 700 }}>⚠ lệch</span>}
+                    </Td>
+                    <Td style={{ color: (row.s.feePercent ?? 100) === 100 ? C.muted : C.amber, fontWeight: (row.s.feePercent ?? 100) === 100 ? 400 : 700 }}>{row.s.feePercent ?? 100}%</Td>
+                    <Td style={{ fontWeight: 700, color: C.amber }}>{fmtMoney(row.amount)}</Td>
                     <Td>
                       {!row.pay ? <Badge color={C.muted}>Chưa tạo</Badge>
                         : row.pay.status === "paid" ? <Badge color={C.green}>✓ Đã thu</Badge>
@@ -1276,9 +1440,10 @@ function PaymentsView({ data, api }) {
                     </Td>
                   </tr>
                 ))}
-                {!rows.length && <tr><td colSpan={7} style={{ padding: "32px", textAlign: "center", color: C.muted }}>Không có dữ liệu khớp bộ lọc</td></tr>}
+                {!rows.length && <tr><td colSpan={8} style={{ padding: "32px", textAlign: "center", color: C.muted }}>Không có dữ liệu khớp bộ lọc</td></tr>}
               </tbody>
             </table>
+          </div>
           </div>
         ) : (
           <div>
@@ -1565,8 +1730,8 @@ function AuthenticatedApp({ profile, onSignOut }) {
     let cancelled = false;
     (async () => {
       try {
-        const [teachers, classes, students, registrations, payments, attendance, payroll, activity_log] = await Promise.all(TABLE_ORDER.map(fetchAll));
-        if (!cancelled) setData({ teachers, classes, students, registrations, payments, attendance, payroll, activity_log });
+        const [teachers, classes, students, registrations, payments, attendance, payroll, activity_log, session_overrides] = await Promise.all(TABLE_ORDER.map(fetchAll));
+        if (!cancelled) setData({ teachers, classes, students, registrations, payments, attendance, payroll, activity_log, session_overrides });
       } catch (e) {
         console.error(e);
         if (!cancelled) showToast("⚠ Không thể tải dữ liệu — kiểm tra kết nối mạng", C.red);
@@ -1603,6 +1768,7 @@ function AuthenticatedApp({ profile, onSignOut }) {
     addStudents: async (ss) => { try { await insertRows("students", ss); log("create", "student", `Nhập Excel ${ss.length} học sinh`); showToast(`✓ Đã nhập ${ss.length} học sinh`); } catch { showToast("⚠ Lỗi khi nhập danh sách học sinh", C.red); } },
     updateStudent: async (s) => { try { await updateRow("students", s.id, MAPPERS.students.toRow(s)); log("update", "student", `Sửa học sinh: ${s.name}`); } catch { showToast("⚠ Lỗi khi cập nhật học sinh", C.red); } },
     deleteStudent: async (id, name) => { try { await deleteRow("students", id); log("delete", "student", `Xóa học sinh: ${name || id}`); } catch { showToast("⚠ Lỗi khi xóa học sinh", C.red); } },
+    deleteStudents: async (ids) => { try { await deleteRows("students", ids); log("delete", "student", `Xóa hàng loạt ${ids.length} học sinh`); showToast(`✓ Đã xóa ${ids.length} học sinh`); } catch { showToast("⚠ Lỗi khi xóa hàng loạt", C.red); } },
 
     addRegistration: async (r) => { try { await insertRow("registrations", r); } catch { showToast("⚠ Lỗi khi đăng ký lớp", C.red); } },
     addRegistrations: async (rs) => { try { await insertRows("registrations", rs); } catch { showToast("⚠ Lỗi khi đăng ký lớp hàng loạt", C.red); } },
@@ -1615,6 +1781,14 @@ function AuthenticatedApp({ profile, onSignOut }) {
     saveAttendance: async (rows) => {
       try { await upsertRows("attendance", rows, "class_id,student_id,date"); showToast("✓ Đã lưu điểm danh"); }
       catch { showToast("⚠ Lỗi khi lưu điểm danh", C.red); }
+    },
+
+    saveSessionOverride: async (o, label) => {
+      try { await upsertRows("session_overrides", [o], "class_id,original_date"); log("update", "class", label || "Cập nhật lịch buổi học"); }
+      catch { showToast("⚠ Lỗi khi lưu thay đổi buổi học", C.red); }
+    },
+    deleteSessionOverride: async (id) => {
+      try { await deleteRow("session_overrides", id); } catch { showToast("⚠ Lỗi khi hủy thay đổi buổi học", C.red); }
     },
 
     addPayrolls: async (ps) => { try { await upsertRows("payroll", ps, "teacher_id,month,year"); } catch { showToast("⚠ Lỗi khi tạo bảng lương", C.red); } },
@@ -1633,7 +1807,7 @@ function AuthenticatedApp({ profile, onSignOut }) {
 
   const pushFullDataset = async (dataset) => {
     // delete children first to respect FK constraints, then re-insert in dependency order
-    await deleteAll("activity_log"); await deleteAll("payroll"); await deleteAll("attendance"); await deleteAll("payments"); await deleteAll("registrations"); await deleteAll("classes");
+    await deleteAll("session_overrides"); await deleteAll("activity_log"); await deleteAll("payroll"); await deleteAll("attendance"); await deleteAll("payments"); await deleteAll("registrations"); await deleteAll("classes");
     await deleteAll("students"); await deleteAll("teachers");
     await insertRows("teachers", dataset.teachers);
     await insertRows("classes", dataset.classes);
@@ -1643,6 +1817,7 @@ function AuthenticatedApp({ profile, onSignOut }) {
     await insertRows("attendance", dataset.attendance || []);
     await insertRows("payroll", dataset.payroll || []);
     await insertRows("activity_log", dataset.activity_log || []);
+    await insertRows("session_overrides", dataset.session_overrides || []);
   };
 
   const importJSON = () => {
@@ -1659,6 +1834,7 @@ function AuthenticatedApp({ profile, onSignOut }) {
           if (!Array.isArray(parsed.attendance)) parsed.attendance = [];
           if (!Array.isArray(parsed.payroll)) parsed.payroll = [];
           if (!Array.isArray(parsed.activity_log)) parsed.activity_log = [];
+          if (!Array.isArray(parsed.session_overrides)) parsed.session_overrides = [];
           const info = `📂 ${file.name}\n\n• ${parsed.teachers.length} giáo viên\n• ${parsed.classes.length} lớp học\n• ${parsed.students.length} học sinh\n• ${parsed.registrations.length} đăng ký\n• ${parsed.payments.length} bản ghi học phí\n• ${parsed.attendance.length} bản ghi điểm danh\n• ${parsed.payroll.length} bản ghi lương\n\n⚠ Dữ liệu hiện tại (trên mọi thiết bị) sẽ bị ghi đè. Tiếp tục?`;
           if (!confirm(info)) return;
           setData(parsed);
